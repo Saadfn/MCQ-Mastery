@@ -1,0 +1,5 @@
+{
+  "name": "MCQ Vision Splitter",
+  "description": "An intelligent document scanner that uses Gemini 3 Pro to analyze, segment, and extract individual Multiple Choice Questions from scanned papers.",
+  "requestFramePermissions": []
+}
