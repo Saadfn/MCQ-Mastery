@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { Subject, Chapter, QuestionSegment, UserAnswer, ExamSession } from '../types';
-import { MockDb } from '../services/mockDb';
-import { ChevronRight, BrainCircuit, CheckCircle, XCircle, Trophy, LayoutList, MonitorPlay } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Subject, QuestionSegment, UserAnswer, ExamSession } from '../types';
+import { ChevronRight, CheckCircle, XCircle, Trophy, LayoutList, MonitorPlay, Clock, Loader2 } from 'lucide-react';
+import { FirebaseService, auth } from '../services/firebase';
 
 interface StudentExamProps {
   subjects: Subject[];
@@ -9,7 +9,7 @@ interface StudentExamProps {
 }
 
 export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) => {
-  const [step, setStep] = useState<'SELECT' | 'EXAM' | 'RESULT'>('SELECT');
+  const [step, setStep] = useState<'SELECT' | 'LOADING' | 'EXAM' | 'RESULT'>('SELECT');
   
   // Selection State
   const [selectedSubjectId, setSelectedSubjectId] = useState<string>("");
@@ -19,31 +19,86 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
   const [questions, setQuestions] = useState<QuestionSegment[]>([]);
   const [currentQIndex, setCurrentQIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({}); // qId -> option
-  const [session, setSession] = useState<ExamSession | null>(null);
+  const [session, setSession] = useState<Partial<ExamSession> | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  
+  // Timer State
+  const [timeLeft, setTimeLeft] = useState(0);
   
   // View Toggle State
   const [viewMode, setViewMode] = useState<'PAGINATED' | 'SCROLLING'>('PAGINATED');
 
-  const startExam = () => {
-    if (!selectedSubjectId) return;
-    const qs = MockDb.getQuestionsForExam(selectedSubjectId, selectedChapterId || 'all');
-    if (qs.length === 0) {
-      alert("No questions found for this selection. Please try another subject.");
-      return;
+  const startExam = async () => {
+    if (!selectedSubjectId || !auth.currentUser) return;
+    setStep('LOADING');
+
+    try {
+      // 1. Fetch Questions from Firebase
+      const allQs = await FirebaseService.getQuestions();
+      
+      // Filter client-side for now (ideal: server side 'where' clauses)
+      const selectedSubName = subjects.find(s => s.id === selectedSubjectId)?.name.toLowerCase();
+      
+      let filtered = allQs.filter(q => {
+         const qSub = q.subject?.toLowerCase();
+         return qSub === selectedSubName || qSub === selectedSubjectId.toLowerCase();
+      });
+
+      if (selectedChapterId) {
+        filtered = filtered.filter(q => q.chapter === selectedChapterId);
+      }
+
+      if (filtered.length === 0) {
+        alert("No questions found for this selection. Please try another subject.");
+        setStep('SELECT');
+        return;
+      }
+
+      const selectedQs = filtered.sort(() => Math.random() - 0.5).slice(0, 20);
+      setQuestions(selectedQs);
+      setTimeLeft(selectedQs.length * 60);
+
+      // 2. Create Session (IN_PROGRESS) to satisfy security rules
+      const selectedSub = subjects.find(s => s.id === selectedSubjectId);
+      const selectedChap = selectedSub?.chapters.find(c => c.id === selectedChapterId);
+      
+      const newSessionData: Partial<ExamSession> = {
+        studentMetadata: {
+          userAgent: navigator.userAgent,
+          timestamp: Date.now(),
+        },
+        subjectId: selectedSubjectId,
+        subjectName: selectedSub?.name || selectedSubjectId,
+        chapterId: selectedChapterId,
+        chapterName: selectedChap?.name,
+        totalQuestions: selectedQs.length,
+        answers: [],
+        score: 0
+      };
+
+      const newId = await FirebaseService.startExamSession(newSessionData, auth.currentUser.uid);
+      setSessionId(newId);
+      setSession(newSessionData);
+
+      setStep('EXAM');
+      setCurrentQIndex(0);
+
+    } catch (err) {
+      console.error("Failed to start exam", err);
+      alert("Error starting exam. Please check your connection.");
+      setStep('SELECT');
     }
-    setQuestions(qs.slice(0, 20)); // Limit to 20 for a session
-    setStep('EXAM');
-    setCurrentQIndex(0);
   };
 
-  const submitExam = () => {
+  const submitExam = useCallback(async () => {
+    if (!sessionId || !session) return;
+    
     // Calculate Score
     let score = 0;
     const detailedAnswers: UserAnswer[] = [];
 
     questions.forEach(q => {
       const selected = answers[q.id];
-      // Simple exact match logic. Case insensitive cleanup might be needed in real app.
       const isCorrect = selected?.toLowerCase() === q.correctAnswer?.toLowerCase();
       if (isCorrect) score++;
       
@@ -54,32 +109,38 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
       });
     });
 
-    const selectedSub = subjects.find(s => s.id === selectedSubjectId || s.name.toLowerCase() === selectedSubjectId.toLowerCase());
-    const selectedChap = selectedSub?.chapters.find(c => c.id === selectedChapterId);
-
-    const newSession: ExamSession = {
-      id: crypto.randomUUID(),
-      studentMetadata: {
-        userAgent: navigator.userAgent,
-        timestamp: Date.now(),
-      },
-      subjectId: selectedSubjectId,
-      subjectName: selectedSub?.name || selectedSubjectId,
-      chapterId: selectedChapterId,
-      chapterName: selectedChap?.name,
-      score: score,
-      totalQuestions: questions.length,
+    // Update Session in Firebase
+    const updateData = {
+      score,
       answers: detailedAnswers
     };
 
-    MockDb.saveExamSession(newSession);
-    setSession(newSession);
-    setStep('RESULT');
-  };
+    try {
+      await FirebaseService.completeExamSession(sessionId, updateData);
+      setSession({ ...session, ...updateData, status: 'COMPLETED' });
+      setStep('RESULT');
+    } catch (err) {
+      console.error("Failed to submit exam", err);
+      alert("Failed to submit results. Please try again.");
+    }
+  }, [questions, answers, sessionId, session]);
 
-  const scrollToQuestion = (index: number) => {
-    const element = document.getElementById(`question-${index}`);
-    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // Timer Logic
+  useEffect(() => {
+    if (step === 'EXAM' && timeLeft > 0) {
+      const timerId = setTimeout(() => {
+        setTimeLeft(prev => prev - 1);
+      }, 1000);
+      return () => clearTimeout(timerId);
+    } else if (step === 'EXAM' && timeLeft === 0) {
+      submitExam();
+    }
+  }, [timeLeft, step, submitExam]);
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   if (step === 'SELECT') {
@@ -135,13 +196,23 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
     );
   }
 
+  if (step === 'LOADING') {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh]">
+        <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4" />
+        <p className="text-slate-500 font-medium">Preparing your exam...</p>
+      </div>
+    );
+  }
+
   if (step === 'EXAM') {
     const answeredCount = Object.keys(answers).length;
     const progress = Math.round((answeredCount / questions.length) * 100);
+    const isLowTime = timeLeft < 60; // Less than 1 minute
 
     return (
       <div className="max-w-3xl mx-auto py-6 px-4">
-        {/* Header: Progress & Toggle */}
+        {/* Header: Progress, Timer & Toggle */}
         <div className="mb-6 space-y-4 sticky top-16 z-40 bg-slate-50/95 backdrop-blur py-2">
           <div className="flex items-center justify-between">
             <div className="flex flex-col">
@@ -149,6 +220,14 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
               <span className="text-xs text-slate-500">{answeredCount} of {questions.length} Answered</span>
             </div>
             
+            {/* Timer Display */}
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border ${isLowTime ? 'bg-red-50 border-red-200 animate-pulse' : 'bg-white border-slate-200'}`}>
+               <Clock size={16} className={isLowTime ? "text-red-500" : "text-slate-400"} />
+               <span className={`text-lg font-mono font-bold ${isLowTime ? "text-red-600" : "text-slate-700"}`}>
+                   {formatTime(timeLeft)}
+               </span>
+            </div>
+
             <div className="flex bg-slate-200 p-1 rounded-lg border border-slate-300">
               <button
                 onClick={() => setViewMode('PAGINATED')}
@@ -191,8 +270,12 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden min-h-[500px] flex flex-col">
               {/* Question Image */}
               <div className="bg-slate-50 border-b border-slate-100 p-8 flex justify-center flex-1 items-center">
-                 {questions[currentQIndex].cropUrl ? (
-                   <img src={questions[currentQIndex].cropUrl} alt="Question" className="max-w-full max-h-[400px] object-contain" />
+                 {questions[currentQIndex].cropUrl || questions[currentQIndex].imageUrl ? (
+                   <img 
+                      src={questions[currentQIndex].imageUrl || questions[currentQIndex].cropUrl} 
+                      alt="Question" 
+                      className="max-w-full max-h-[400px] object-contain" 
+                   />
                  ) : (
                    <div className="text-slate-400 italic">No image available</div>
                  )}
@@ -263,8 +346,8 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
                  </div>
                  
                  <div className="p-6 flex flex-col items-center border-b border-slate-50">
-                    {q.cropUrl ? (
-                      <img src={q.cropUrl} alt={`Q${idx+1}`} className="max-w-full max-h-[300px] object-contain" />
+                    {q.imageUrl || q.cropUrl ? (
+                      <img src={q.imageUrl || q.cropUrl} alt={`Q${idx+1}`} className="max-w-full max-h-[300px] object-contain" />
                     ) : (
                       <div className="text-slate-300 text-sm">Image not available</div>
                     )}
@@ -307,7 +390,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
 
   // Result View
   if (step === 'RESULT' && session) {
-    const percentage = Math.round((session.score / session.totalQuestions) * 100);
+    const percentage = session.totalQuestions ? Math.round((session.score! / session.totalQuestions) * 100) : 0;
     
     return (
       <div className="max-w-2xl mx-auto py-12 px-4 text-center animate-in zoom-in-95">
@@ -325,7 +408,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
 
         <div className="text-left space-y-4">
           <h3 className="font-bold text-slate-800 ml-1">Answer Key Review</h3>
-          {session.answers.map((ans, idx) => {
+          {session.answers!.map((ans, idx) => {
             const q = questions.find(qu => qu.id === ans.questionId);
             return (
               <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 flex gap-4">
@@ -338,7 +421,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
                       <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded flex items-center gap-1"><XCircle size={10} /> Incorrect</span>
                     )}
                   </div>
-                  {q?.cropUrl && <img src={q.cropUrl} className="h-20 object-contain mb-2 border rounded" />}
+                  {(q?.imageUrl || q?.cropUrl) && (
+                    <img src={q.imageUrl || q.cropUrl} className="h-20 object-contain mb-2 border rounded" alt="" />
+                  )}
                   <div className="text-xs text-slate-500">
                     You chose: <span className="font-bold">{ans.selectedOption}</span> 
                     {!ans.isCorrect && q?.correctAnswer && <span> | Correct: <span className="font-bold text-green-600">{q.correctAnswer}</span></span>}

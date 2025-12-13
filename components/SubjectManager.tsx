@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Subject, Chapter } from '../types';
-import { Plus, Trash2, ChevronRight, ChevronDown, BookOpen, Layers } from 'lucide-react';
+import { Subject } from '../types';
+import { Plus, Trash2, ChevronRight, ChevronDown, BookOpen, Layers, Loader2 } from 'lucide-react';
+import { FirebaseService } from '../services/firebase';
 
 interface SubjectManagerProps {
   subjects: Subject[];
@@ -12,56 +13,85 @@ export const SubjectManager: React.FC<SubjectManagerProps> = ({ subjects, onUpda
   const [newSubjectName, setNewSubjectName] = useState("");
   const [expandedSubjectId, setExpandedSubjectId] = useState<string | null>(null);
   const [newChapterName, setNewChapterName] = useState("");
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  const handleAddSubject = () => {
+  // --- Subject Handlers ---
+
+  const handleAddSubject = async () => {
     if (!newSubjectName.trim()) return;
-    const newSubject: Subject = {
-      id: newSubjectName.toLowerCase().replace(/\s+/g, '_'),
-      name: newSubjectName.trim(),
-      chapters: []
-    };
-    onUpdateSubjects([...subjects, newSubject]);
-    setNewSubjectName("");
+    setIsProcessing(true);
+    try {
+      const newSubject = await FirebaseService.createSubject(newSubjectName.trim());
+      onUpdateSubjects([...subjects, newSubject]);
+      setNewSubjectName("");
+    } catch (err) {
+      console.error("Failed to create subject", err);
+      alert("Error saving subject. Check console for details.");
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
-  const handleDeleteSubject = (id: string) => {
-    onUpdateSubjects(subjects.filter(s => s.id !== id));
+  const handleDeleteSubject = async (id: string) => {
+    if (!window.confirm("Are you sure? This will hide the subject from the menu.")) return;
+    setIsProcessing(true);
+    try {
+      await FirebaseService.deleteSubject(id);
+      onUpdateSubjects(subjects.filter(s => s.id !== id));
+    } catch (err) {
+      console.error("Failed to delete subject", err);
+      alert("Error deleting subject.");
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
-  const handleAddChapter = (subjectId: string) => {
+  // --- Chapter Handlers ---
+
+  const handleAddChapter = async (subjectId: string) => {
     if (!newChapterName.trim()) return;
-    
-    const updatedSubjects = subjects.map(s => {
-      if (s.id === subjectId) {
-        return {
-          ...s,
-          chapters: [
-            ...s.chapters, 
-            { 
-              id: newChapterName.toLowerCase().replace(/\s+/g, '_'), 
-              name: newChapterName.trim() 
-            }
-          ]
-        };
-      }
-      return s;
-    });
-
-    onUpdateSubjects(updatedSubjects);
-    setNewChapterName("");
+    setIsProcessing(true);
+    try {
+      const newChapter = await FirebaseService.createChapter(subjectId, newChapterName.trim());
+      
+      // Update local state by finding the subject and appending the chapter
+      const updatedSubjects = subjects.map(s => {
+        if (s.id === subjectId) {
+          return { ...s, chapters: [...s.chapters, newChapter] };
+        }
+        return s;
+      });
+      
+      onUpdateSubjects(updatedSubjects);
+      setNewChapterName("");
+    } catch (err) {
+      console.error("Failed to create chapter", err);
+      alert("Error saving chapter.");
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
-  const handleDeleteChapter = (subjectId: string, chapterId: string) => {
-    const updatedSubjects = subjects.map(s => {
-      if (s.id === subjectId) {
-        return {
-          ...s,
-          chapters: s.chapters.filter(c => c.id !== chapterId)
-        };
-      }
-      return s;
-    });
-    onUpdateSubjects(updatedSubjects);
+  const handleDeleteChapter = async (subjectId: string, chapterId: string) => {
+    if (!window.confirm("Remove this chapter?")) return;
+    setIsProcessing(true);
+    try {
+      await FirebaseService.deleteChapter(subjectId, chapterId);
+      
+      const updatedSubjects = subjects.map(s => {
+        if (s.id === subjectId) {
+          return { ...s, chapters: s.chapters.filter(c => c.id !== chapterId) };
+        }
+        return s;
+      });
+      
+      onUpdateSubjects(updatedSubjects);
+    } catch (err) {
+      console.error("Failed to delete chapter", err);
+      alert("Error deleting chapter.");
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const toggleExpand = (id: string) => {
@@ -74,7 +104,7 @@ export const SubjectManager: React.FC<SubjectManagerProps> = ({ subjects, onUpda
       <div className="flex items-center justify-between mb-8">
         <div>
           <h2 className="text-2xl font-bold text-slate-900">Manage Taxonomy</h2>
-          <p className="text-slate-500">Add subjects and their corresponding chapters.</p>
+          <p className="text-slate-500">Define subjects and chapters for your Question Bank.</p>
         </div>
         <button 
           onClick={onBack}
@@ -91,14 +121,17 @@ export const SubjectManager: React.FC<SubjectManagerProps> = ({ subjects, onUpda
           value={newSubjectName}
           onChange={(e) => setNewSubjectName(e.target.value)}
           placeholder="New Subject Name (e.g. Thermodynamics)"
-          className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+          disabled={isProcessing}
+          className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none disabled:bg-slate-100"
           onKeyDown={(e) => e.key === 'Enter' && handleAddSubject()}
         />
         <button 
           onClick={handleAddSubject}
-          className="bg-indigo-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-indigo-700 transition-colors flex items-center gap-2"
+          disabled={isProcessing}
+          className="bg-indigo-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-70"
         >
-          <Plus size={18} /> Add Subject
+          {isProcessing ? <Loader2 className="animate-spin" size={18} /> : <Plus size={18} />}
+          Add Subject
         </button>
       </div>
 
@@ -107,7 +140,7 @@ export const SubjectManager: React.FC<SubjectManagerProps> = ({ subjects, onUpda
         {subjects.length === 0 && (
           <div className="text-center py-12 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200">
             <BookOpen className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-            <p className="text-slate-500">No subjects defined yet.</p>
+            <p className="text-slate-500">No subjects defined yet. Add one above.</p>
           </div>
         )}
 
@@ -130,6 +163,7 @@ export const SubjectManager: React.FC<SubjectManagerProps> = ({ subjects, onUpda
               <button 
                 onClick={(e) => { e.stopPropagation(); handleDeleteSubject(subject.id); }}
                 className="text-slate-400 hover:text-red-500 p-2 hover:bg-red-50 rounded transition-colors"
+                title="Delete Subject"
               >
                 <Trash2 size={18} />
               </button>
@@ -137,7 +171,7 @@ export const SubjectManager: React.FC<SubjectManagerProps> = ({ subjects, onUpda
 
             {/* Chapters Section */}
             {expandedSubjectId === subject.id && (
-              <div className="bg-slate-50 border-t border-slate-100 p-4 pl-16">
+              <div className="bg-slate-50 border-t border-slate-100 p-4 pl-16 animate-in slide-in-from-top-2">
                  {/* Add Chapter */}
                  <div className="flex gap-2 mb-4">
                   <input
@@ -145,13 +179,15 @@ export const SubjectManager: React.FC<SubjectManagerProps> = ({ subjects, onUpda
                     value={newChapterName}
                     onChange={(e) => setNewChapterName(e.target.value)}
                     placeholder={`Add chapter to ${subject.name}...`}
-                    className="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-md focus:ring-1 focus:ring-indigo-500 outline-none"
+                    disabled={isProcessing}
+                    className="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-md focus:ring-1 focus:ring-indigo-500 outline-none disabled:bg-slate-200"
                     onKeyDown={(e) => e.key === 'Enter' && handleAddChapter(subject.id)}
                     onClick={(e) => e.stopPropagation()}
                   />
                   <button 
                     onClick={(e) => { e.stopPropagation(); handleAddChapter(subject.id); }}
-                    className="bg-white border border-slate-300 text-slate-700 px-3 py-1.5 rounded-md text-sm font-medium hover:bg-slate-100"
+                    disabled={isProcessing}
+                    className="bg-white border border-slate-300 text-slate-700 px-3 py-1.5 rounded-md text-sm font-medium hover:bg-slate-100 disabled:opacity-50"
                   >
                     Add
                   </button>
@@ -159,14 +195,15 @@ export const SubjectManager: React.FC<SubjectManagerProps> = ({ subjects, onUpda
 
                 <div className="space-y-2">
                   {subject.chapters.map(chapter => (
-                    <div key={chapter.id} className="flex items-center justify-between group bg-white p-2 rounded border border-slate-200">
+                    <div key={chapter.id} className="flex items-center justify-between group bg-white p-2 rounded border border-slate-200 hover:border-indigo-200">
                       <div className="flex items-center gap-2">
-                        <Layers size={14} className="text-slate-400" />
+                        <Layers size={14} className="text-slate-400 group-hover:text-indigo-400" />
                         <span className="text-sm text-slate-700">{chapter.name}</span>
                       </div>
                       <button 
                         onClick={() => handleDeleteChapter(subject.id, chapter.id)}
                         className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Delete Chapter"
                       >
                         <Trash2 size={14} />
                       </button>

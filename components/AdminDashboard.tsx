@@ -1,30 +1,45 @@
 import React, { useEffect, useState } from 'react';
-import { MockDb } from '../services/mockDb';
 import { ExamSession } from '../types';
-import { BarChart3, Users, Clock, Monitor, ChevronDown, ChevronUp } from 'lucide-react';
+import { BarChart3, Users, Clock, Monitor, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import { FirebaseService } from '../services/firebase';
 
 export const AdminDashboard: React.FC = () => {
   const [sessions, setSessions] = useState<ExamSession[]>([]);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setSessions(MockDb.getExamSessions());
+    const fetchSessions = async () => {
+      try {
+        const data = await FirebaseService.getExamSessions();
+        setSessions(data);
+      } catch (err) {
+        console.error("Failed to load sessions", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchSessions();
   }, []);
 
   const totalTaken = sessions.length;
-  const avgScore = totalTaken > 0 
-    ? (sessions.reduce((acc, curr) => acc + (curr.score / curr.totalQuestions), 0) / totalTaken * 100).toFixed(1) 
+  // Calculate average only for completed sessions if status exists
+  const completedSessions = sessions.filter(s => s.status === 'COMPLETED' || s.score !== undefined);
+  const avgScore = completedSessions.length > 0 
+    ? (completedSessions.reduce((acc, curr) => acc + (curr.score / curr.totalQuestions), 0) / completedSessions.length * 100).toFixed(1) 
     : 0;
-
-  // Simple aggregation for chart (Subject popularity)
-  const subjectCounts = sessions.reduce((acc, curr) => {
-    acc[curr.subjectName] = (acc[curr.subjectName] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
 
   const toggleExpand = (id: string) => {
     setExpandedSessionId(expandedSessionId === id ? null : id);
   };
+
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
@@ -64,7 +79,7 @@ export const AdminDashboard: React.FC = () => {
               <p className="text-sm text-slate-500 font-medium">Last Activity</p>
               <h3 className="text-lg font-bold text-slate-900">
                 {sessions.length > 0 
-                  ? new Date(sessions[0].studentMetadata.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+                  ? new Date(sessions[0].createdAt?.toMillis ? sessions[0].createdAt.toMillis() : Date.now()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
                   : "N/A"}
               </h3>
             </div>
@@ -95,7 +110,9 @@ export const AdminDashboard: React.FC = () => {
                 <React.Fragment key={session.id}>
                   <tr className="hover:bg-slate-50/50 transition-colors">
                     <td className="px-6 py-4 text-slate-600">
-                      {new Date(session.studentMetadata.timestamp).toLocaleString()}
+                      {session.createdAt?.toMillis 
+                        ? new Date(session.createdAt.toMillis()).toLocaleString() 
+                        : "Just now"}
                     </td>
                     <td className="px-6 py-4">
                       <div className="font-medium text-slate-800">{session.subjectName}</div>
@@ -104,26 +121,31 @@ export const AdminDashboard: React.FC = () => {
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <span className={`px-2 py-1 rounded-full text-xs font-bold ${
-                        (session.score / session.totalQuestions) >= 0.7 
-                          ? 'bg-green-100 text-green-700' 
-                          : (session.score / session.totalQuestions) >= 0.4 
-                            ? 'bg-yellow-100 text-yellow-700' 
-                            : 'bg-red-100 text-red-700'
-                      }`}>
-                        {session.score} / {session.totalQuestions}
-                      </span>
+                      {session.status === 'IN_PROGRESS' ? (
+                        <span className="px-2 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-600">In Progress</span>
+                      ) : (
+                        <span className={`px-2 py-1 rounded-full text-xs font-bold ${
+                          (session.score / session.totalQuestions) >= 0.7 
+                            ? 'bg-green-100 text-green-700' 
+                            : (session.score / session.totalQuestions) >= 0.4 
+                              ? 'bg-yellow-100 text-yellow-700' 
+                              : 'bg-red-100 text-red-700'
+                        }`}>
+                          {session.score} / {session.totalQuestions}
+                        </span>
+                      )}
                     </td>
-                    <td className="px-6 py-4 max-w-xs truncate text-slate-500" title={session.studentMetadata.userAgent}>
+                    <td className="px-6 py-4 max-w-xs truncate text-slate-500" title={session.studentMetadata?.userAgent}>
                       <div className="flex items-center gap-2">
                         <Monitor size={14} />
-                        <span className="truncate">{session.studentMetadata.userAgent}</span>
+                        <span className="truncate">{session.studentMetadata?.userAgent || "Unknown"}</span>
                       </div>
                     </td>
                     <td className="px-6 py-4">
                       <button 
                         onClick={() => toggleExpand(session.id)}
-                        className="text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1"
+                        disabled={session.status === 'IN_PROGRESS'}
+                        className="text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {expandedSessionId === session.id ? 'Hide' : 'Details'} 
                         {expandedSessionId === session.id ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}
@@ -138,7 +160,7 @@ export const AdminDashboard: React.FC = () => {
                         <div className="space-y-3">
                           <h4 className="text-xs font-bold uppercase text-slate-400 tracking-wider">Session Answer Key</h4>
                           <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                            {session.answers.map((ans, idx) => (
+                            {session.answers?.map((ans, idx) => (
                               <div key={idx} className={`p-2 rounded border text-xs flex justify-between ${
                                 ans.isCorrect ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'
                               }`}>

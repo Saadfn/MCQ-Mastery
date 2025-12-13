@@ -9,7 +9,7 @@ import { analyzeImage } from './services/geminiService';
 import { extractCrops } from './utils/imageUtils';
 import { AppState, QuestionSegment, Subject } from './types';
 import { Loader2, AlertCircle, ShieldCheck, LogOut, LayoutDashboard, ScanLine, ArrowLeft } from 'lucide-react';
-import { MockDb } from './services/mockDb';
+import { ensureAuth, FirebaseService } from './services/firebase';
 
 const App: React.FC = () => {
   const [state, setState] = useState<AppState>(AppState.HOME);
@@ -17,12 +17,34 @@ const App: React.FC = () => {
   const [segments, setSegments] = useState<QuestionSegment[]>([]);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [statusMessage, setStatusMessage] = useState<string>("");
+  const [isAuthReady, setIsAuthReady] = useState(false);
   
   // Used to force a reset of the student exam component when navigating Home
   const [resetKey, setResetKey] = useState(0); 
   
-  // Load initial data from MockDb
-  const [subjects, setSubjects] = useState<Subject[]>(MockDb.getSubjects());
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+
+  // 1. Initialize Auth
+  useEffect(() => {
+    ensureAuth().then((user) => {
+      console.log("Authenticated as:", user.uid);
+      setIsAuthReady(true);
+      // Load subjects after auth
+      loadSubjects();
+    }).catch(err => {
+      console.error("Auth failed:", err);
+      setErrorMsg("Could not connect to database.");
+    });
+  }, []);
+
+  const loadSubjects = async () => {
+    try {
+      const subs = await FirebaseService.getSubjects();
+      setSubjects(subs);
+    } catch (err) {
+      console.error("Failed to load subjects", err);
+    }
+  };
 
   useEffect(() => {
     // Check URL for admin deep link (simulation)
@@ -33,12 +55,14 @@ const App: React.FC = () => {
 
   const handleSubjectsUpdate = (newSubjects: Subject[]) => {
     setSubjects(newSubjects);
-    MockDb.saveSubjects(newSubjects);
+    // Note: Saving happens inside SubjectManager individual calls mostly, 
+    // but if we do bulk updates we might need a different approach.
+    // For now, SubjectManager will call Firebase directly, we just update local state to reflect it.
   };
 
   const handleGoHome = () => {
     setState(AppState.HOME);
-    setResetKey(prev => prev + 1); // Increment key to force re-render of student component
+    setResetKey(prev => prev + 1); 
   };
 
   const handleAdminLogout = () => {
@@ -47,8 +71,7 @@ const App: React.FC = () => {
   };
 
   const handleFileSelect = async (file: File) => {
-    // Only upload in Admin Upload mode
-    setState(AppState.ADMIN_UPLOAD); // Ensure we stay in upload mode visually
+    setState(AppState.ADMIN_UPLOAD); 
     setErrorMsg("");
     setStatusMessage("Preparing image...");
     
@@ -82,14 +105,10 @@ const App: React.FC = () => {
         });
 
         setSegments(standardizedSegments);
-        // We stay in Upload mode, but now showing results. 
-        // We'll use a specific internal state check in the render or just rely on imageSrc existence
       } catch (err: any) {
         console.error(err);
         setErrorMsg(err.message || "Failed to analyze image. Please try again.");
-        // Stay in upload state but show error
       } finally {
-        // Clear status message when done
         setStatusMessage("");
       }
     };
@@ -156,6 +175,18 @@ const App: React.FC = () => {
     </header>
   );
 
+  // --- Initial Loading ---
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="text-center">
+           <Loader2 className="w-8 h-8 text-indigo-600 animate-spin mx-auto mb-4" />
+           <p className="text-slate-500 font-medium">Connecting to Secure Database...</p>
+        </div>
+      </div>
+    );
+  }
+
   // --- Main Render Switch ---
 
   if (state === AppState.ADMIN_LOGIN) {
@@ -201,14 +232,13 @@ const App: React.FC = () => {
         {state === AppState.ADMIN_SUBJECTS && (
            <SubjectManager 
              subjects={subjects} 
-             onUpdateSubjects={handleSubjectsUpdate}
-             onBack={() => setState(AppState.ADMIN_UPLOAD)} // Return to upload tool
+             onUpdateSubjects={handleSubjectsUpdate} // Callback to update local state after DB change
+             onBack={() => setState(AppState.ADMIN_UPLOAD)} 
            />
         )}
 
         {state === AppState.ADMIN_UPLOAD && (
           <>
-            {/* If no image selected yet, show Upload Zone */}
             {!imageSrc && !statusMessage && (
               <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <div className="flex justify-between items-center mb-8">
@@ -224,7 +254,6 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {/* Loading State */}
             {statusMessage && (
                <div className="flex flex-col items-center justify-center min-h-[60vh]">
                  <div className="w-16 h-16 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin mb-6"></div>
@@ -235,7 +264,6 @@ const App: React.FC = () => {
                </div>
             )}
 
-            {/* Error State */}
             {errorMsg && (
                <div className="flex flex-col items-center justify-center min-h-[60vh]">
                  <div className="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mb-6">
@@ -247,7 +275,6 @@ const App: React.FC = () => {
                </div>
             )}
 
-            {/* Success/Result View */}
             {imageSrc && !statusMessage && !errorMsg && (
               <div className="animate-in fade-in zoom-in-95 duration-500">
                  <div className="mb-6 flex justify-between items-center">

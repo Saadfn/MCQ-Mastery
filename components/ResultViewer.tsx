@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { QuestionSegment, Subject } from '../types';
-import { Download, Save, Layers, BookOpen, CheckSquare, CheckCircle2, Move, MousePointerClick } from 'lucide-react';
-import { MockDb } from '../services/mockDb';
+import { Save, BookOpen, Layers, CheckSquare, CheckCircle2, MousePointerClick, Loader2 } from 'lucide-react';
 import { extractSingleCrop } from '../utils/imageUtils';
+import { FirebaseService, auth } from '../services/firebase';
 
 interface ResultViewerProps {
   originalImage: string;
@@ -16,13 +16,13 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
   const [hoveredId, setHoveredId] = useState<string | number | null>(null);
   const [selectedId, setSelectedId] = useState<string | number | null>(null);
   const [savedIds, setSavedIds] = useState<Set<string | number>>(new Set());
+  const [isSaving, setIsSaving] = useState(false);
   
   // Resizing State
   const [resizingHandle, setResizingHandle] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
 
-  // Sync state if props change (re-analysis)
   useEffect(() => {
     setSegments(initialSegments);
   }, [initialSegments]);
@@ -43,31 +43,74 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
     }));
   };
 
-  const handleSave = (segment: QuestionSegment) => {
-    if (savedIds.has(segment.id)) return;
-    MockDb.saveQuestions([{ ...segment, id: crypto.randomUUID() }]);
-    setSavedIds(prev => new Set(prev).add(segment.id));
+  const saveToFirebase = async (segment: QuestionSegment) => {
+    if (!auth.currentUser) return;
+    const newId = crypto.randomUUID();
+    
+    // 1. Upload Image if cropUrl exists
+    let downloadUrl = "";
+    if (segment.cropUrl) {
+      downloadUrl = await FirebaseService.uploadQuestionImage(newId, segment.cropUrl);
+    }
+
+    // 2. Prepare payload
+    const payload: QuestionSegment = {
+      ...segment,
+      id: newId,
+      imageUrl: downloadUrl, // Save the remote URL
+      // remove cropUrl to save space in DB if desired, but nice to keep local for now? 
+      // Actually Firestore rules might not like huge strings, better to set cropUrl to null or same as imageUrl
+      cropUrl: downloadUrl, 
+    };
+
+    // 3. Save to Firestore
+    await FirebaseService.saveQuestion(payload, auth.currentUser.uid);
   };
 
-  const handleSaveAll = () => {
+  const handleSave = async (segment: QuestionSegment) => {
+    if (savedIds.has(segment.id)) return;
+    setIsSaving(true);
+    try {
+      await saveToFirebase(segment);
+      setSavedIds(prev => new Set(prev).add(segment.id));
+    } catch (err) {
+      console.error("Save failed", err);
+      alert("Failed to save question. See console.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSaveAll = async () => {
     const unsaved = segments.filter(s => !savedIds.has(s.id));
     if (unsaved.length === 0) return;
-    const toSave = unsaved.map(s => ({ ...s, id: crypto.randomUUID() }));
-    MockDb.saveQuestions(toSave);
-    const newSavedIds = new Set(savedIds);
-    segments.forEach(s => newSavedIds.add(s.id));
-    setSavedIds(newSavedIds);
-    alert(`Successfully added ${unsaved.length} questions to the database.`);
+    
+    setIsSaving(true);
+    try {
+      // Process in parallel or sequence? Parallel is faster but might hit rate limits. 
+      // Let's do batch of 5
+      for (let i = 0; i < unsaved.length; i += 5) {
+        const batch = unsaved.slice(i, i + 5);
+        await Promise.all(batch.map(s => saveToFirebase(s)));
+      }
+      
+      const newSavedIds = new Set(savedIds);
+      unsaved.forEach(s => newSavedIds.add(s.id));
+      setSavedIds(newSavedIds);
+      alert(`Successfully added ${unsaved.length} questions to the database.`);
+    } catch (err) {
+      console.error("Batch save failed", err);
+      alert("Some questions failed to save.");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  // --- Resizing Logic ---
-
+  // --- Resizing Logic (Unchanged) ---
   const handleMouseDown = (e: React.MouseEvent, id: string | number) => {
-    e.stopPropagation(); // Prevent deselecting immediately
+    e.stopPropagation();
     setSelectedId(id);
-    setActiveTab('visual'); // Switch to visual tab to see the update
-    
-    // Scroll editor into view if needed
+    setActiveTab('visual');
     const card = document.getElementById(`seg-${id}`);
     card?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
@@ -80,72 +123,46 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!resizingHandle || !selectedId || !containerRef.current) return;
-
     const rect = containerRef.current.getBoundingClientRect();
     const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
     const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
-    
-    // Convert to normalized 0-1000 coordinates
     const normX = (x / rect.width) * 1000;
     const normY = (y / rect.height) * 1000;
-
     setSegments(prev => prev.map(seg => {
       if (seg.id !== selectedId) return seg;
-
       const box = { ...seg.boundingBox };
-
       switch (resizingHandle) {
-        case 'nw': // Top-Left
-          box.ymin = Math.min(normY, box.ymax - 10);
-          box.xmin = Math.min(normX, box.xmax - 10);
-          break;
-        case 'ne': // Top-Right
-          box.ymin = Math.min(normY, box.ymax - 10);
-          box.xmax = Math.max(normX, box.xmin + 10);
-          break;
-        case 'sw': // Bottom-Left
-          box.ymax = Math.max(normY, box.ymin + 10);
-          box.xmin = Math.min(normX, box.xmax - 10);
-          break;
-        case 'se': // Bottom-Right
-          box.ymax = Math.max(normY, box.ymin + 10);
-          box.xmax = Math.max(normX, box.xmin + 10);
-          break;
+        case 'nw': box.ymin = Math.min(normY, box.ymax - 10); box.xmin = Math.min(normX, box.xmax - 10); break;
+        case 'ne': box.ymin = Math.min(normY, box.ymax - 10); box.xmax = Math.max(normX, box.xmin + 10); break;
+        case 'sw': box.ymax = Math.max(normY, box.ymin + 10); box.xmin = Math.min(normX, box.xmax - 10); break;
+        case 'se': box.ymax = Math.max(normY, box.ymin + 10); box.xmax = Math.max(normX, box.xmin + 10); break;
       }
-
       return { ...seg, boundingBox: box };
     }));
   };
 
   const handleMouseUp = async () => {
     if (resizingHandle && selectedId) {
-      // Re-crop image on release
       const seg = segments.find(s => s.id === selectedId);
       if (seg) {
         try {
           const newCropUrl = await extractSingleCrop(originalImage, seg);
           setSegments(prev => prev.map(s => s.id === selectedId ? { ...s, cropUrl: newCropUrl } : s));
-        } catch (err) {
-          console.error("Failed to recrop:", err);
-        }
+        } catch (err) { console.error(err); }
       }
     }
     setResizingHandle(null);
   };
 
-  // Click outside to deselect
-  const handleBackgroundClick = () => {
-    setSelectedId(null);
-  };
+  const handleBackgroundClick = () => { setSelectedId(null); };
 
   return (
     <div 
       className="grid grid-cols-1 lg:grid-cols-2 gap-6 w-full max-w-7xl mx-auto h-[800px]"
       onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp} // Handle mouse leaving window while dragging
+      onMouseLeave={handleMouseUp}
       onMouseMove={handleMouseMove}
     >
-      
       {/* Left Panel: Source View */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden h-full">
         <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
@@ -174,8 +191,6 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
               className="max-w-full h-auto block pointer-events-none"
               draggable={false}
             />
-            
-            {/* Overlay Boxes */}
             {segments.map((seg) => {
               const { ymin, xmin, ymax, xmax } = seg.boundingBox;
               const isSelected = selectedId === seg.id;
@@ -188,11 +203,7 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
                   onMouseEnter={() => setHoveredId(seg.id)}
                   onMouseLeave={() => setHoveredId(null)}
                   className={`absolute border-2 transition-colors cursor-pointer group ${
-                    isSelected 
-                      ? 'border-indigo-600 bg-indigo-500/10 z-30' 
-                      : isHovered 
-                        ? 'border-indigo-400 bg-indigo-400/10 z-20'
-                        : 'border-red-500/40 hover:border-red-500 z-10'
+                    isSelected ? 'border-indigo-600 bg-indigo-500/10 z-30' : isHovered ? 'border-indigo-400 bg-indigo-400/10 z-20' : 'border-red-500/40 hover:border-red-500 z-10'
                   }`}
                   style={{
                     top: `${(ymin / 1000) * 100}%`,
@@ -201,36 +212,15 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
                     width: `${((xmax - xmin) / 1000) * 100}%`,
                   }}
                 >
-                  {/* Label */}
-                  <span className={`absolute -top-6 left-0 text-xs font-bold px-1.5 py-0.5 rounded shadow-sm ${
-                     isSelected ? 'bg-indigo-600 text-white' : 'bg-red-500/80 text-white'
-                  }`}>
+                  <span className={`absolute -top-6 left-0 text-xs font-bold px-1.5 py-0.5 rounded shadow-sm ${isSelected ? 'bg-indigo-600 text-white' : 'bg-red-500/80 text-white'}`}>
                     Q{seg.id}
                   </span>
-
-                  {/* Resize Handles (Only when selected) */}
                   {isSelected && (
                     <>
-                      {/* NW */}
-                      <div 
-                        onMouseDown={(e) => handleResizeStart(e, 'nw')}
-                        className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-indigo-600 rounded-full cursor-nw-resize hover:scale-125 transition-transform"
-                      />
-                      {/* NE */}
-                      <div 
-                        onMouseDown={(e) => handleResizeStart(e, 'ne')}
-                        className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-indigo-600 rounded-full cursor-ne-resize hover:scale-125 transition-transform"
-                      />
-                      {/* SW */}
-                      <div 
-                        onMouseDown={(e) => handleResizeStart(e, 'sw')}
-                        className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-indigo-600 rounded-full cursor-sw-resize hover:scale-125 transition-transform"
-                      />
-                      {/* SE */}
-                      <div 
-                        onMouseDown={(e) => handleResizeStart(e, 'se')}
-                        className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-indigo-600 rounded-full cursor-se-resize hover:scale-125 transition-transform"
-                      />
+                      <div onMouseDown={(e) => handleResizeStart(e, 'nw')} className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-indigo-600 rounded-full cursor-nw-resize hover:scale-125 transition-transform"/>
+                      <div onMouseDown={(e) => handleResizeStart(e, 'ne')} className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-indigo-600 rounded-full cursor-ne-resize hover:scale-125 transition-transform"/>
+                      <div onMouseDown={(e) => handleResizeStart(e, 'sw')} className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-indigo-600 rounded-full cursor-sw-resize hover:scale-125 transition-transform"/>
+                      <div onMouseDown={(e) => handleResizeStart(e, 'se')} className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-indigo-600 rounded-full cursor-se-resize hover:scale-125 transition-transform"/>
                     </>
                   )}
                 </div>
@@ -247,9 +237,11 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
           <div className="flex gap-2">
             <button 
               onClick={handleSaveAll}
-              className="px-3 py-1 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors flex items-center gap-1 shadow-sm"
+              disabled={isSaving}
+              className="px-3 py-1 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors flex items-center gap-1 shadow-sm disabled:opacity-50"
             >
-              <Save size={14} /> Add All
+              {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 
+              {isSaving ? 'Saving...' : 'Add All'}
             </button>
             <div className="w-px h-6 bg-slate-300 mx-1"></div>
             <button 
@@ -310,9 +302,6 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
                          ) : (
                            <span className="text-xs text-slate-400">Loading crop...</span>
                          )}
-                         <div className="absolute inset-0 bg-black/5 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                            <span className="text-[10px] text-slate-600 bg-white/90 px-2 py-1 rounded">Preview</span>
-                         </div>
                        </div>
                      ) : (
                        <textarea 
@@ -379,7 +368,7 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
                     <div className="pt-2 flex justify-end">
                       <button 
                         onClick={() => handleSave(seg)}
-                        disabled={isSaved}
+                        disabled={isSaved || isSaving}
                         className={`text-xs px-3 py-1.5 rounded transition-colors flex items-center gap-1 border ${
                           isSaved 
                             ? 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed' 
@@ -397,7 +386,6 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
           })}
         </div>
       </div>
-
     </div>
   );
 };
