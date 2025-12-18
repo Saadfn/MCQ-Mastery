@@ -1,6 +1,6 @@
 
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { QuestionSegment, BoundingBox } from '../types';
+import { QuestionSegment, BoundingBox, Subject } from '../types';
 import { FirebaseService } from '../services/firebase';
 import { 
   Trash2, 
@@ -20,12 +20,16 @@ import {
   ChevronRight,
   Crop,
   CheckCircle,
-  Undo
+  Undo,
+  Edit2,
+  Save,
+  X as CloseIcon
 } from 'lucide-react';
 import { extractSingleCrop } from '../utils/imageUtils';
 
 export const QuestionBank: React.FC = () => {
   const [questions, setQuestions] = useState<QuestionSegment[]>([]);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -33,6 +37,10 @@ export const QuestionBank: React.FC = () => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
   
+  // Editing State
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValues, setEditValues] = useState<{subject: string, chapter: string}>({ subject: '', chapter: '' });
+
   // Custom Modal State for Deletion
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
@@ -50,23 +58,27 @@ export const QuestionBank: React.FC = () => {
   
   const reCropContainerRef = useRef<HTMLDivElement>(null);
 
-  const loadQuestions = useCallback(async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await FirebaseService.getQuestions();
-      setQuestions(data);
+      const [qs, subs] = await Promise.all([
+        FirebaseService.getQuestions(),
+        FirebaseService.getSubjects()
+      ]);
+      setQuestions(qs);
+      setSubjects(subs);
     } catch (err: any) {
       console.error("[Bank] Load failed:", err);
-      setError("Failed to fetch questions. Check Firestore rules or console.");
+      setError("Failed to fetch data. Check Firestore rules or console.");
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadQuestions();
-  }, [loadQuestions]);
+    loadData();
+  }, [loadData]);
 
   const filteredQuestions = useMemo(() => {
     return questions.filter(q => {
@@ -77,10 +89,8 @@ export const QuestionBank: React.FC = () => {
   }, [questions, searchQuery, subjectFilter]);
 
   const uniqueSubjects = useMemo(() => {
-    const subjects = new Set<string>();
-    questions.forEach(q => { if (q.subject) subjects.add(q.subject); });
-    return [...subjects].sort();
-  }, [questions]);
+    return subjects.map(s => s.name).sort();
+  }, [subjects]);
 
   const toggleSelect = (id: string | number, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -137,6 +147,43 @@ export const QuestionBank: React.FC = () => {
     } finally {
       setDeleting(false);
     }
+  };
+
+  const startEditing = (q: QuestionSegment, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingId(String(q.id));
+    setEditValues({
+      subject: q.subject || '',
+      chapter: q.chapter || ''
+    });
+  };
+
+  const saveEdit = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!editingId) return;
+    
+    try {
+      await FirebaseService.updateQuestion(editingId, {
+        subject: editValues.subject,
+        chapter: editValues.chapter
+      });
+      
+      setQuestions(prev => prev.map(q => 
+        String(q.id) === editingId 
+          ? { ...q, subject: editValues.subject, chapter: editValues.chapter } 
+          : q
+      ));
+      
+      setEditingId(null);
+    } catch (err) {
+      console.error("Failed to update question", err);
+      alert("Failed to save changes.");
+    }
+  };
+
+  const cancelEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingId(null);
   };
 
   const handleNextPreview = useCallback(() => {
@@ -273,7 +320,7 @@ export const QuestionBank: React.FC = () => {
         
         <div className="flex items-center gap-3">
           <button 
-            onClick={loadQuestions}
+            onClick={loadData}
             className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition-all"
             title="Refresh Data"
           >
@@ -362,7 +409,13 @@ export const QuestionBank: React.FC = () => {
               {filteredQuestions.map((q, idx) => {
                 const sid = String(q.id);
                 const isSelected = selectedIds.has(sid);
+                const isEditing = editingId === sid;
                 const imageUrl = q.imageUrl || q.cropUrl;
+                
+                // Get chapters for current selected subject in edit mode
+                const currentSubjectObj = subjects.find(s => s.name === editValues.subject);
+                const availableChapters = currentSubjectObj?.chapters || [];
+
                 return (
                   <tr key={sid} className={`hover:bg-slate-50/50 transition-colors ${isSelected ? 'bg-indigo-50/30' : ''}`}>
                     <td className="px-6 py-4">
@@ -388,26 +441,90 @@ export const QuestionBank: React.FC = () => {
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex flex-col gap-1 max-w-md">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full uppercase">
-                            {q.subject || "Uncategorized"}
-                          </span>
-                          <span className="text-[10px] text-slate-400 font-mono">ID: {sid.slice(-8)}</span>
+                      {isEditing ? (
+                        <div className="flex flex-col gap-2 max-w-xs" onClick={e => e.stopPropagation()}>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase">Subject</label>
+                            <select 
+                              value={editValues.subject}
+                              onChange={(e) => setEditValues({...editValues, subject: e.target.value, chapter: ''})}
+                              className="text-xs p-1 bg-white border border-slate-200 rounded outline-none focus:ring-1 focus:ring-indigo-500"
+                            >
+                              <option value="">Uncategorized</option>
+                              {subjects.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+                            </select>
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase">Chapter</label>
+                            <select 
+                              value={editValues.chapter}
+                              disabled={!editValues.subject}
+                              onChange={(e) => setEditValues({...editValues, chapter: e.target.value})}
+                              className="text-xs p-1 bg-white border border-slate-200 rounded outline-none focus:ring-1 focus:ring-indigo-500 disabled:bg-slate-50"
+                            >
+                              <option value="">No Chapter</option>
+                              {availableChapters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                            </select>
+                          </div>
                         </div>
-                        <p className="text-sm text-slate-600 line-clamp-2 italic leading-relaxed">
-                          {q.text || "No text available."}
-                        </p>
-                      </div>
+                      ) : (
+                        <div className="flex flex-col gap-1 max-w-md">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-[10px] font-bold bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full uppercase">
+                              {q.subject || "Uncategorized"}
+                            </span>
+                            {q.chapter && (
+                              <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full uppercase">
+                                {q.chapter}
+                              </span>
+                            )}
+                            <span className="text-[10px] text-slate-400 font-mono">ID: {sid.slice(-8)}</span>
+                          </div>
+                          <p className="text-sm text-slate-600 line-clamp-2 italic leading-relaxed">
+                            {q.text || "No text available."}
+                          </p>
+                        </div>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <button 
-                        onClick={(e) => openDeleteModal(sid, e)}
-                        disabled={deleting}
-                        className="text-slate-400 hover:text-red-500 p-2 hover:bg-red-50 rounded-lg disabled:opacity-30 transition-all"
-                      >
-                        <Trash2 size={18} />
-                      </button>
+                      <div className="flex items-center justify-end gap-1">
+                        {isEditing ? (
+                          <>
+                            <button 
+                              onClick={saveEdit}
+                              className="text-green-500 hover:text-green-600 p-2 hover:bg-green-50 rounded-lg transition-all"
+                              title="Save Changes"
+                            >
+                              <Save size={18} />
+                            </button>
+                            <button 
+                              onClick={cancelEdit}
+                              className="text-slate-400 hover:text-slate-600 p-2 hover:bg-slate-50 rounded-lg transition-all"
+                              title="Cancel"
+                            >
+                              <CloseIcon size={18} />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button 
+                              onClick={(e) => startEditing(q, e)}
+                              className="text-slate-400 hover:text-indigo-600 p-2 hover:bg-indigo-50 rounded-lg transition-all"
+                              title="Quick Edit Taxonomy"
+                            >
+                              <Edit2 size={18} />
+                            </button>
+                            <button 
+                              onClick={(e) => openDeleteModal(sid, e)}
+                              disabled={deleting}
+                              className="text-slate-400 hover:text-red-500 p-2 hover:bg-red-50 rounded-lg disabled:opacity-30 transition-all"
+                              title="Delete Question"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -610,7 +727,7 @@ export const QuestionBank: React.FC = () => {
             <p className="font-bold text-sm uppercase tracking-tight">Database Error</p>
             <p className="text-xs font-medium opacity-80">{error}</p>
           </div>
-          <button onClick={loadQuestions} className="text-xs font-black uppercase underline hover:no-underline px-3 py-1 bg-white/50 rounded-md transition-colors">Retry</button>
+          <button onClick={loadData} className="text-xs font-black uppercase underline hover:no-underline px-3 py-1 bg-white/50 rounded-md transition-colors">Retry</button>
         </div>
       )}
     </div>
