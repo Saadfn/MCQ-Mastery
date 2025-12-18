@@ -20,13 +20,13 @@ import {
   orderBy, 
   serverTimestamp,
   writeBatch
-} from "@firebase/firestore";
+} from "firebase/firestore";
 import { 
   getStorage, 
   ref, 
   uploadBytes, 
   getDownloadURL 
-} from "@firebase/storage";
+} from "firebase/storage";
 import { ExamSession, QuestionSegment, Subject, Chapter } from "../types";
 
 const firebaseConfig = {
@@ -146,8 +146,8 @@ export const FirebaseService = {
   },
 
   updateQuestion: async (id: string, updates: Partial<QuestionSegment>) => {
-    const ref = doc(db, "questions", id);
-    await updateDoc(ref, {
+    const refDoc = doc(db, "questions", id);
+    await updateDoc(refDoc, {
       ...updates,
       updatedAt: serverTimestamp()
     });
@@ -156,19 +156,43 @@ export const FirebaseService = {
   getQuestions: async (): Promise<QuestionSegment[]> => {
     const q = query(collection(db, "questions"), orderBy("createdAt", "desc"));
     const snapshot = await getDocs(q);
-    // Force document ID to string to avoid type mismatches later
+    // Fix: Spread types may only be created from object types. Cast d.data() to any.
     return snapshot.docs.map(d => ({ 
-      ...d.data(), 
+      ...(d.data() as any), 
       id: String(d.id) 
     } as QuestionSegment));
   },
 
+  getQuestionsBySubject: async (subjectName: string): Promise<QuestionSegment[]> => {
+    const q = query(
+      collection(db, "questions"),
+      where("subject", "==", subjectName),
+      orderBy("createdAt", "desc")
+    );
+    const snapshot = await getDocs(q);
+    // Fix: Spread types may only be created from object types. Cast d.data() to any.
+    return snapshot.docs.map(d => ({ ...(d.data() as any), id: String(d.id) } as QuestionSegment));
+  },
+
+  getQuestionsBySubjectAndChapter: async (
+    subjectName: string, 
+    chapterName: string
+  ): Promise<QuestionSegment[]> => {
+    const q = query(
+      collection(db, "questions"),
+      where("subject", "==", subjectName),
+      where("chapter", "==", chapterName),
+      orderBy("createdAt", "desc")
+    );
+    const snapshot = await getDocs(q);
+    // Fix: Spread types may only be created from object types. Cast d.data() to any.
+    return snapshot.docs.map(d => ({ ...(d.data() as any), id: String(d.id) } as QuestionSegment));
+  },
+
   deleteQuestion: async (id: string | number) => {
     const docId = String(id);
-    console.log(`[Firebase] Deleting document: questions/${docId}`);
     try {
       await deleteDoc(doc(db, "questions", docId));
-      console.log(`[Firebase] Successfully deleted: ${docId}`);
     } catch (err) {
       console.error(`[Firebase] Delete failed for ${docId}:`, err);
       throw err;
@@ -176,7 +200,6 @@ export const FirebaseService = {
   },
 
   deleteQuestionsBatch: async (ids: (string | number)[]) => {
-    console.log(`[Firebase] Starting batch delete for ${ids.length} items`);
     const chunks = [];
     const stringIds = ids.map(id => String(id));
     for (let i = 0; i < stringIds.length; i += 500) {
@@ -186,19 +209,19 @@ export const FirebaseService = {
     for (const chunk of chunks) {
       const batch = writeBatch(db);
       chunk.forEach(id => {
-        const ref = doc(db, "questions", id);
-        batch.delete(ref);
+        const refDoc = doc(db, "questions", id);
+        batch.delete(refDoc);
       });
       await batch.commit();
-      console.log(`[Firebase] Committed batch of ${chunk.length} items`);
     }
   },
 
   // --- Exam Sessions ---
   startExamSession: async (session: Partial<ExamSession>, userId: string): Promise<string> => {
     const newSessionRef = doc(collection(db, "exam_sessions"));
+    // Fix: Spread types may only be created from object types. Cast session to any.
     const sessionData = {
-      ...session,
+      ...(session as any),
       id: newSessionRef.id,
       userId,
       status: 'IN_PROGRESS',
@@ -210,8 +233,9 @@ export const FirebaseService = {
 
   completeExamSession: async (sessionId: string, data: Partial<ExamSession>) => {
     const sessionRef = doc(db, "exam_sessions", sessionId);
+    // Fix: Spread types may only be created from object types. Cast data to any.
     await updateDoc(sessionRef, {
-      ...data,
+      ...(data as any),
       status: 'COMPLETED',
       completedAt: serverTimestamp()
     });
@@ -225,6 +249,7 @@ export const FirebaseService = {
       q = query(collection(db, "exam_sessions"), orderBy("createdAt", "desc"));
     }
     const snapshot = await getDocs(q);
-    return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as ExamSession));
+    // Fix: Spread types may only be created from object types. Cast d.data() to any.
+    return snapshot.docs.map(d => ({ ...(d.data() as any), id: d.id } as ExamSession));
   }
 };

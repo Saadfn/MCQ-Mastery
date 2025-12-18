@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Subject, QuestionSegment, UserAnswer, ExamSession } from '../types';
-import { ChevronRight, CheckCircle, XCircle, Trophy, LayoutList, MonitorPlay, Clock, Loader2 } from 'lucide-react';
+import { ChevronRight, CheckCircle, XCircle, Trophy, LayoutList, MonitorPlay, Clock, Loader2, ShieldAlert } from 'lucide-react';
 import { FirebaseService, auth } from '../services/firebase';
 
 interface StudentExamProps {
@@ -22,6 +22,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
   const [answers, setAnswers] = useState<Record<string, string>>({}); // qId -> option
   const [session, setSession] = useState<Partial<ExamSession> | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   
   // Timer State
   const [timeLeft, setTimeLeft] = useState(0);
@@ -32,18 +33,25 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
   const startExam = async () => {
     if (!selectedSubjectId || !auth.currentUser) return;
     setStep('LOADING');
+    setError(null);
 
     try {
-      // 1. Fetch Questions from Firebase
-      const allQs = await FirebaseService.getQuestions();
-      
-      // Filter client-side for now (ideal: server side 'where' clauses)
-      const selectedSubName = subjects.find(s => s.id === selectedSubjectId)?.name?.toLowerCase();
-      
-      let filtered = allQs.filter(q => {
-         const qSub = q.subject?.toLowerCase();
-         return qSub === selectedSubName || qSub === selectedSubjectId.toLowerCase();
-      });
+      const activeSub = subjects.find(s => s.id === selectedSubjectId);
+      const activeChap = activeSub?.chapters.find(c => c.id === selectedChapterId);
+
+      // Use the actual Display Name for querying as Firestore is case-sensitive
+      const subjectName = activeSub?.name;
+      const chapterName = activeChap?.name;
+
+      let filtered: QuestionSegment[] = [];
+
+      if (chapterName) {
+        // Server-side: subject + chapter (Requires Composite Index)
+        filtered = await FirebaseService.getQuestionsBySubjectAndChapter(subjectName!, chapterName);
+      } else {
+        // Server-side: subject only
+        filtered = await FirebaseService.getQuestionsBySubject(subjectName!);
+      }
 
       if (filtered.length === 0) {
         alert("No questions found for this selection. Please try another subject.");
@@ -55,19 +63,15 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
       setQuestions(selectedQs);
       setTimeLeft(selectedQs.length * 60);
 
-      // 2. Create Session (IN_PROGRESS) to satisfy security rules
-      const selectedSub = subjects.find(s => s.id === selectedSubjectId);
-      const selectedChap = selectedSub?.chapters.find(c => c.id === selectedChapterId);
-      
       const newSessionData: Partial<ExamSession> = {
         studentMetadata: {
           userAgent: navigator.userAgent,
           timestamp: Date.now(),
         },
         subjectId: selectedSubjectId,
-        subjectName: selectedSub?.name || selectedSubjectId,
+        subjectName: subjectName || selectedSubjectId,
         chapterId: selectedChapterId,
-        chapterName: selectedChap?.name,
+        chapterName: chapterName,
         totalQuestions: selectedQs.length,
         answers: [],
         score: 0
@@ -80,9 +84,13 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
       setStep('EXAM');
       setCurrentQIndex(0);
 
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to start exam", err);
-      alert("Error starting exam. Please check your connection.");
+      if (err.message?.includes('index')) {
+        setError("Database Index Required: Please check your browser console for the link to create a composite index for this query.");
+      } else {
+        setError("Error starting exam. Please check your connection.");
+      }
       setStep('SELECT');
     }
   };
@@ -90,7 +98,6 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
   const submitExam = useCallback(async () => {
     if (!sessionId || !session) return;
     
-    // Calculate Score
     let score = 0;
     const detailedAnswers: UserAnswer[] = [];
 
@@ -106,7 +113,6 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
       });
     });
 
-    // Update Session in Firebase
     const updateData = {
       score,
       answers: detailedAnswers
@@ -122,7 +128,6 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
     }
   }, [questions, answers, sessionId, session]);
 
-  // Timer Logic
   useEffect(() => {
     if (step === 'EXAM' && timeLeft > 0) {
       const timerId = setTimeout(() => {
@@ -141,7 +146,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
   };
 
   if (step === 'SELECT') {
-    const activeSubject = subjects.find(s => s.id === selectedSubjectId || s.name?.toLowerCase() === selectedSubjectId?.toLowerCase());
+    const activeSubject = subjects.find(s => s.id === selectedSubjectId);
 
     return (
       <div className="max-w-xl mx-auto py-12 px-4 animate-in fade-in slide-in-from-bottom-8">
@@ -150,8 +155,17 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
           <p className="text-slate-500 mt-2">Select your topic to begin the assessment.</p>
         </div>
 
+        {error && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 text-red-700">
+            <ShieldAlert className="shrink-0 mt-0.5" size={18} />
+            <div className="text-sm">
+              <p className="font-bold">Initialization Error</p>
+              <p className="opacity-90">{error}</p>
+            </div>
+          </div>
+        )}
+
         <div className="bg-white p-8 rounded-2xl shadow-xl border border-slate-100 space-y-6">
-          {/* Subject Select */}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">Subject</label>
             <select 
@@ -166,7 +180,6 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
             </select>
           </div>
 
-          {/* Chapter Select */}
           <div className={`transition-opacity duration-300 ${!selectedSubjectId ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
             <label className="block text-sm font-medium text-slate-700 mb-2">Chapter (Optional)</label>
             <select 
@@ -205,11 +218,10 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
   if (step === 'EXAM') {
     const answeredCount = Object.keys(answers).length;
     const progress = Math.round((answeredCount / questions.length) * 100);
-    const isLowTime = timeLeft < 60; // Less than 1 minute
+    const isLowTime = timeLeft < 60;
 
     return (
       <div className="max-w-3xl mx-auto py-6 px-4">
-        {/* Header: Progress, Timer & Toggle */}
         <div className="mb-6 space-y-4 sticky top-16 z-40 bg-slate-50/95 backdrop-blur py-2">
           <div className="flex items-center justify-between">
             <div className="flex flex-col">
@@ -217,7 +229,6 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
               <span className="text-xs text-slate-500">{answeredCount} of {questions.length} Answered</span>
             </div>
             
-            {/* Timer Display */}
             <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border ${isLowTime ? 'bg-red-50 border-red-200 animate-pulse' : 'bg-white border-slate-200'}`}>
                <Clock size={16} className={isLowTime ? "text-red-500" : "text-slate-400"} />
                <span className={`text-lg font-mono font-bold ${isLowTime ? "text-red-600" : "text-slate-700"}`}>
@@ -261,11 +272,9 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
           </div>
         </div>
 
-        {/* --- VIEW MODE: PAGINATED --- */}
         {viewMode === 'PAGINATED' && (
           <div className="animate-in fade-in slide-in-from-right-4 duration-300">
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden min-h-[500px] flex flex-col">
-              {/* Question Image */}
               <div className="bg-slate-50 border-b border-slate-100 p-8 flex justify-center flex-1 items-center">
                  {questions[currentQIndex].cropUrl || questions[currentQIndex].imageUrl ? (
                    <img 
@@ -278,7 +287,6 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
                  )}
               </div>
               
-              {/* Options */}
               <div className="p-8 bg-white">
                 <div className="flex justify-between items-center mb-4">
                   <p className="text-sm text-slate-400 uppercase tracking-wider font-bold">Select Answer</p>
@@ -303,7 +311,6 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
               </div>
             </div>
 
-            {/* Navigation */}
             <div className="flex justify-between mt-8">
                <button
                  onClick={() => setCurrentQIndex(prev => Math.max(0, prev - 1))}
@@ -332,7 +339,6 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
           </div>
         )}
 
-        {/* --- VIEW MODE: SCROLLING --- */}
         {viewMode === 'SCROLLING' && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-300">
              {questions.map((q, idx) => (
@@ -380,12 +386,10 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
              </div>
           </div>
         )}
-
       </div>
     );
   }
 
-  // Result View
   if (step === 'RESULT' && session) {
     const percentage = session.totalQuestions ? Math.round((session.score! / session.totalQuestions) * 100) : 0;
     
