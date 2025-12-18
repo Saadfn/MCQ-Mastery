@@ -1,6 +1,6 @@
 
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
-import { QuestionSegment, Subject } from '../types';
+import { QuestionSegment } from '../types';
 import { FirebaseService } from '../services/firebase';
 import { 
   Trash2, 
@@ -12,7 +12,10 @@ import {
   AlertCircle,
   Image as ImageIcon,
   RefreshCw,
-  XCircle
+  XCircle,
+  AlertTriangle,
+  X,
+  Maximize2
 } from 'lucide-react';
 
 export const QuestionBank: React.FC = () => {
@@ -23,15 +26,24 @@ export const QuestionBank: React.FC = () => {
   const [subjectFilter, setSubjectFilter] = useState("all");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  
+  // Custom Modal State for Deletion
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    type: 'single' | 'bulk';
+    id?: string;
+    count?: number;
+  }>({ isOpen: false, type: 'single' });
+
+  // Image Preview Modal State
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   const loadQuestions = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      console.log("[Bank] Loading questions...");
       const data = await FirebaseService.getQuestions();
       setQuestions(data);
-      console.log(`[Bank] Loaded ${data.length} questions.`);
     } catch (err: any) {
       console.error("[Bank] Load failed:", err);
       setError("Failed to fetch questions. Check Firestore rules or console.");
@@ -55,8 +67,7 @@ export const QuestionBank: React.FC = () => {
   const uniqueSubjects = useMemo(() => {
     const subjects = new Set<string>();
     questions.forEach(q => { if (q.subject) subjects.add(q.subject); });
-    // Fix: Using spread operator for more reliable type inference than Array.from
-    return [...subjects];
+    return [...subjects].sort();
   }, [questions]);
 
   const toggleSelect = (id: string | number, e?: React.MouseEvent) => {
@@ -77,59 +88,40 @@ export const QuestionBank: React.FC = () => {
     }
   };
 
-  const handleDelete = async (id: string | number, e: React.MouseEvent) => {
+  const openDeleteModal = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const sid = String(id);
-    
-    if (!window.confirm("Delete this question forever?")) return;
-    
-    setDeleting(true);
-    console.log(`[Bank] Initiating delete for: ${sid}`);
-    
-    try {
-      await FirebaseService.deleteQuestion(sid);
-      
-      // Update UI state
-      setQuestions(prev => prev.filter(q => String(q.id) !== sid));
-      
-      // Remove from selection if present
-      const nextSelected = new Set(selectedIds);
-      nextSelected.delete(sid);
-      setSelectedIds(nextSelected);
-      
-      console.log(`[Bank] UI updated after deletion of: ${sid}`);
-    } catch (err: any) {
-      console.error("[Bank] Individual delete failed:", err);
-      alert(`Delete failed: ${err.message || 'Unknown error'}. Check Firestore rules.`);
-    } finally {
-      setDeleting(false);
-    }
+    setConfirmModal({ isOpen: true, type: 'single', id });
   };
 
-  const handleBulkDelete = async (e: React.MouseEvent) => {
+  const openBulkDeleteModal = (e: React.MouseEvent) => {
     e.stopPropagation();
-    const count = selectedIds.size;
-    if (count === 0) return;
-    
-    if (!window.confirm(`Delete ${count} selected questions? This cannot be undone.`)) return;
+    setConfirmModal({ isOpen: true, type: 'bulk', count: selectedIds.size });
+  };
 
+  const closeConfirmModal = () => {
+    setConfirmModal({ isOpen: false, type: 'single' });
+  };
+
+  const handleConfirmDelete = async () => {
     setDeleting(true);
-    // Fix: Use spread operator to ensure types are correctly inferred from Set<string> to string[]
-    const idsToDelete = [...selectedIds];
-    console.log(`[Bank] Initiating bulk delete for ${count} items.`);
-
     try {
-      await FirebaseService.deleteQuestionsBatch(idsToDelete);
-      
-      // Update UI state
-      const idStringsToDelete = new Set(idsToDelete);
-      setQuestions(prev => prev.filter(q => !idStringsToDelete.has(String(q.id))));
-      setSelectedIds(new Set());
-      
-      console.log("[Bank] UI updated after bulk deletion.");
+      if (confirmModal.type === 'single' && confirmModal.id) {
+        await FirebaseService.deleteQuestion(confirmModal.id);
+        setQuestions(prev => prev.filter(q => String(q.id) !== confirmModal.id));
+        const nextSelected = new Set(selectedIds);
+        nextSelected.delete(confirmModal.id);
+        setSelectedIds(nextSelected);
+      } else if (confirmModal.type === 'bulk') {
+        const idsToDelete = [...selectedIds];
+        await FirebaseService.deleteQuestionsBatch(idsToDelete);
+        const idStringsToDelete = new Set(idsToDelete);
+        setQuestions(prev => prev.filter(q => !idStringsToDelete.has(String(q.id))));
+        setSelectedIds(new Set());
+      }
+      closeConfirmModal();
     } catch (err: any) {
-      console.error("[Bank] Bulk delete failed:", err);
-      alert(`Bulk delete failed: ${err.message}. Check console.`);
+      console.error("[Bank] Delete failed:", err);
+      alert(`Delete failed: ${err.message || 'Unknown error'}`);
     } finally {
       setDeleting(false);
     }
@@ -145,7 +137,7 @@ export const QuestionBank: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
+    <div className="space-y-6 animate-in fade-in duration-500 relative">
       {/* Header Actions */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -164,7 +156,7 @@ export const QuestionBank: React.FC = () => {
 
           {selectedIds.size > 0 && (
             <button 
-              onClick={handleBulkDelete}
+              onClick={openBulkDeleteModal}
               disabled={deleting}
               className="bg-red-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-red-700 transition-all flex items-center gap-2 shadow-lg shadow-red-100 disabled:opacity-50"
             >
@@ -244,6 +236,7 @@ export const QuestionBank: React.FC = () => {
               {filteredQuestions.map((q) => {
                 const sid = String(q.id);
                 const isSelected = selectedIds.has(sid);
+                const imageUrl = q.imageUrl || q.cropUrl;
                 return (
                   <tr key={sid} className={`hover:bg-slate-50/50 transition-colors ${isSelected ? 'bg-indigo-50/30' : ''}`}>
                     <td className="px-6 py-4">
@@ -252,9 +245,17 @@ export const QuestionBank: React.FC = () => {
                       </button>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="w-24 h-16 bg-slate-100 rounded border border-slate-200 overflow-hidden flex items-center justify-center group relative">
-                        {q.imageUrl || q.cropUrl ? (
-                          <img src={q.imageUrl || q.cropUrl} className="max-w-full max-h-full object-contain" alt="" />
+                      <div 
+                        onClick={() => imageUrl && setPreviewImage(imageUrl)}
+                        className={`w-24 h-16 bg-slate-100 rounded border border-slate-200 overflow-hidden flex items-center justify-center group relative cursor-zoom-in transition-all active:scale-95 shadow-sm hover:shadow-md ${!imageUrl ? 'cursor-default' : ''}`}
+                      >
+                        {imageUrl ? (
+                          <>
+                            <img src={imageUrl} className="max-w-full max-h-full object-contain" alt="" />
+                            <div className="absolute inset-0 bg-indigo-600/0 group-hover:bg-indigo-600/10 transition-colors flex items-center justify-center">
+                              <Maximize2 className="text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-md" size={16} />
+                            </div>
+                          </>
                         ) : (
                           <ImageIcon className="text-slate-300" size={20} />
                         )}
@@ -268,16 +269,16 @@ export const QuestionBank: React.FC = () => {
                           </span>
                           <span className="text-[10px] text-slate-400 font-mono">ID: {sid.slice(-8)}</span>
                         </div>
-                        <p className="text-sm text-slate-600 line-clamp-2 italic">
+                        <p className="text-sm text-slate-600 line-clamp-2 italic leading-relaxed">
                           {q.text || "No text available."}
                         </p>
                       </div>
                     </td>
                     <td className="px-6 py-4 text-right">
                       <button 
-                        onClick={(e) => handleDelete(sid, e)}
+                        onClick={(e) => openDeleteModal(sid, e)}
                         disabled={deleting}
-                        className="text-slate-400 hover:text-red-500 p-2 hover:bg-red-50 rounded-lg disabled:opacity-30"
+                        className="text-slate-400 hover:text-red-500 p-2 hover:bg-red-50 rounded-lg disabled:opacity-30 transition-all"
                       >
                         <Trash2 size={18} />
                       </button>
@@ -300,14 +301,78 @@ export const QuestionBank: React.FC = () => {
         </div>
       </div>
 
+      {/* Image Preview Modal */}
+      {previewImage && (
+        <div 
+          className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/90 backdrop-blur-md animate-in fade-in duration-300"
+          onClick={() => setPreviewImage(null)}
+        >
+          <div className="relative max-w-5xl w-full max-h-[90vh] flex items-center justify-center animate-in zoom-in-95 duration-300">
+            <button 
+              onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}
+              className="absolute -top-12 right-0 md:-right-12 p-2 bg-white/10 hover:bg-white/20 text-white rounded-full transition-all group active:scale-90"
+              title="Close Preview"
+            >
+              <X size={24} className="group-hover:rotate-90 transition-transform" />
+            </button>
+            <img 
+              src={previewImage} 
+              className="max-w-full max-h-full object-contain rounded-xl shadow-2xl border border-white/10"
+              alt="Question Preview"
+              onClick={(e) => e.stopPropagation()}
+            />
+            <div className="absolute -bottom-10 left-0 right-0 text-center">
+              <p className="text-white/60 text-xs font-medium tracking-widest uppercase">Question Image Preview • Click backdrop to close</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Confirmation Modal */}
+      {confirmModal.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="p-6 text-center">
+              <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                <AlertTriangle size={32} />
+              </div>
+              <h3 className="text-xl font-bold text-slate-900 mb-2">Confirm Deletion</h3>
+              <p className="text-slate-500 text-sm">
+                {confirmModal.type === 'single' 
+                  ? "Are you sure you want to delete this question? This action cannot be undone."
+                  : `Are you sure you want to delete ${confirmModal.count} selected questions? This will permanently remove them from the database.`
+                }
+              </p>
+            </div>
+            <div className="bg-slate-50 p-4 flex gap-3">
+              <button 
+                onClick={closeConfirmModal}
+                disabled={deleting}
+                className="flex-1 px-4 py-2.5 text-slate-600 font-semibold hover:bg-slate-200 rounded-xl transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleConfirmDelete}
+                disabled={deleting}
+                className="flex-1 px-4 py-2.5 bg-red-600 text-white font-bold hover:bg-red-700 rounded-xl transition-all shadow-lg shadow-red-100 flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {deleting ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />}
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {error && (
-        <div className="flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl">
+        <div className="flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl shadow-lg border-l-4">
           <AlertCircle size={20} />
           <div className="flex-1">
-            <p className="font-bold text-sm">Database Error</p>
-            <p className="text-xs">{error}</p>
+            <p className="font-bold text-sm uppercase tracking-tight">Database Error</p>
+            <p className="text-xs font-medium opacity-80">{error}</p>
           </div>
-          <button onClick={loadQuestions} className="text-xs font-black uppercase underline">Retry</button>
+          <button onClick={loadQuestions} className="text-xs font-black uppercase underline hover:no-underline px-3 py-1 bg-white/50 rounded-md transition-colors">Retry</button>
         </div>
       )}
     </div>
