@@ -1,6 +1,6 @@
 
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
-import { QuestionSegment } from '../types';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { QuestionSegment, BoundingBox } from '../types';
 import { FirebaseService } from '../services/firebase';
 import { 
   Trash2, 
@@ -15,8 +15,14 @@ import {
   XCircle,
   AlertTriangle,
   X,
-  Maximize2
+  Maximize2,
+  ChevronLeft,
+  ChevronRight,
+  Crop,
+  CheckCircle,
+  Undo
 } from 'lucide-react';
+import { extractSingleCrop } from '../utils/imageUtils';
 
 export const QuestionBank: React.FC = () => {
   const [questions, setQuestions] = useState<QuestionSegment[]>([]);
@@ -36,7 +42,13 @@ export const QuestionBank: React.FC = () => {
   }>({ isOpen: false, type: 'single' });
 
   // Image Preview Modal State
-  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [isReCropMode, setIsReCropMode] = useState(false);
+  const [tempBox, setTempBox] = useState<BoundingBox | null>(null);
+  const [resizingHandle, setResizingHandle] = useState<string | null>(null);
+  const [isUpdatingCrop, setIsUpdatingCrop] = useState(false);
+  
+  const reCropContainerRef = useRef<HTMLDivElement>(null);
 
   const loadQuestions = useCallback(async () => {
     setLoading(true);
@@ -126,6 +138,120 @@ export const QuestionBank: React.FC = () => {
       setDeleting(false);
     }
   };
+
+  const handleNextPreview = useCallback(() => {
+    if (previewIndex === null) return;
+    setIsReCropMode(false);
+    setTempBox(null);
+    setPreviewIndex((prev) => (prev! + 1) % filteredQuestions.length);
+  }, [previewIndex, filteredQuestions.length]);
+
+  const handlePrevPreview = useCallback(() => {
+    if (previewIndex === null) return;
+    setIsReCropMode(false);
+    setTempBox(null);
+    setPreviewIndex((prev) => (prev! - 1 + filteredQuestions.length) % filteredQuestions.length);
+  }, [previewIndex, filteredQuestions.length]);
+
+  // Handle keyboard navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (previewIndex === null) return;
+      if (isReCropMode) return; // Disable gallery arrows when cropping
+      if (e.key === 'ArrowRight') handleNextPreview();
+      if (e.key === 'ArrowLeft') handlePrevPreview();
+      if (e.key === 'Escape') {
+        if (isReCropMode) {
+          setIsReCropMode(false);
+          setTempBox(null);
+        } else {
+          setPreviewIndex(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [previewIndex, isReCropMode, handleNextPreview, handlePrevPreview]);
+
+  // --- Re-Crop Interaction Handlers ---
+  const handleResizeStart = (e: React.MouseEvent, handle: string) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setResizingHandle(handle);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!resizingHandle || !tempBox || !reCropContainerRef.current) return;
+    const rect = reCropContainerRef.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+    const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
+    const normX = (x / rect.width) * 1000;
+    const normY = (y / rect.height) * 1000;
+
+    const box = { ...tempBox };
+    switch (resizingHandle) {
+      case 'nw': box.ymin = Math.min(normY, box.ymax - 10); box.xmin = Math.min(normX, box.xmax - 10); break;
+      case 'ne': box.ymin = Math.min(normY, box.ymax - 10); box.xmax = Math.max(normX, box.xmin + 10); break;
+      case 'sw': box.ymax = Math.max(normY, box.ymin + 10); box.xmin = Math.min(normX, box.xmax - 10); break;
+      case 'se': box.ymax = Math.max(normY, box.ymin + 10); box.xmax = Math.max(normX, box.xmin + 10); break;
+    }
+    setTempBox(box);
+  };
+
+  const handleMouseUp = () => {
+    setResizingHandle(null);
+  };
+
+  const handleSaveReCrop = async () => {
+    if (!previewItem || !tempBox) return;
+    setIsUpdatingCrop(true);
+    try {
+      const sourceUrl = previewItem.sourceImageUrl;
+      if (!sourceUrl) throw new Error("No source paper available for this question.");
+
+      // 1. Generate new crop from original image URL
+      const newCropBase64 = await extractSingleCrop(sourceUrl, { 
+        ...previewItem, 
+        boundingBox: tempBox 
+      });
+
+      // 2. Upload to Firebase
+      const newUrl = await FirebaseService.uploadQuestionImage(String(previewItem.id), newCropBase64);
+
+      // 3. Update Firestore
+      await FirebaseService.updateQuestion(String(previewItem.id), {
+        boundingBox: tempBox,
+        imageUrl: newUrl,
+        cropUrl: newUrl
+      });
+
+      // 4. Update local state
+      setQuestions(prev => prev.map(q => q.id === previewItem.id ? { 
+        ...q, 
+        boundingBox: tempBox, 
+        imageUrl: newUrl, 
+        cropUrl: newUrl 
+      } : q));
+
+      setIsReCropMode(false);
+      setTempBox(null);
+    } catch (err: any) {
+      console.error("Failed to update crop", err);
+      alert(err.message || "Failed to save changes.");
+    } finally {
+      setIsUpdatingCrop(false);
+    }
+  };
+
+  const startReCrop = () => {
+    if (previewItem) {
+      setTempBox({ ...previewItem.boundingBox });
+      setIsReCropMode(true);
+    }
+  };
+
+  const previewItem = previewIndex !== null ? filteredQuestions[previewIndex] : null;
+  const previewImageUrl = previewItem ? (previewItem.imageUrl || previewItem.cropUrl) : null;
 
   if (loading) {
     return (
@@ -233,7 +359,7 @@ export const QuestionBank: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredQuestions.map((q) => {
+              {filteredQuestions.map((q, idx) => {
                 const sid = String(q.id);
                 const isSelected = selectedIds.has(sid);
                 const imageUrl = q.imageUrl || q.cropUrl;
@@ -246,7 +372,7 @@ export const QuestionBank: React.FC = () => {
                     </td>
                     <td className="px-6 py-4">
                       <div 
-                        onClick={() => imageUrl && setPreviewImage(imageUrl)}
+                        onClick={() => imageUrl && setPreviewIndex(idx)}
                         className={`w-24 h-16 bg-slate-100 rounded border border-slate-200 overflow-hidden flex items-center justify-center group relative cursor-zoom-in transition-all active:scale-95 shadow-sm hover:shadow-md ${!imageUrl ? 'cursor-default' : ''}`}
                       >
                         {imageUrl ? (
@@ -301,28 +427,140 @@ export const QuestionBank: React.FC = () => {
         </div>
       </div>
 
-      {/* Image Preview Modal */}
-      {previewImage && (
+      {/* Image Preview Modal with Slider & Re-Crop */}
+      {previewIndex !== null && (
         <div 
-          className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/90 backdrop-blur-md animate-in fade-in duration-300"
-          onClick={() => setPreviewImage(null)}
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/90 backdrop-blur-md animate-in fade-in duration-300 overflow-hidden"
+          onClick={() => { if (!isUpdatingCrop) setPreviewIndex(null); }}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
         >
-          <div className="relative max-w-5xl w-full max-h-[90vh] flex items-center justify-center animate-in zoom-in-95 duration-300">
-            <button 
-              onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}
-              className="absolute -top-12 right-0 md:-right-12 p-2 bg-white/10 hover:bg-white/20 text-white rounded-full transition-all group active:scale-90"
-              title="Close Preview"
-            >
-              <X size={24} className="group-hover:rotate-90 transition-transform" />
-            </button>
-            <img 
-              src={previewImage} 
-              className="max-w-full max-h-full object-contain rounded-xl shadow-2xl border border-white/10"
-              alt="Question Preview"
-              onClick={(e) => e.stopPropagation()}
-            />
-            <div className="absolute -bottom-10 left-0 right-0 text-center">
-              <p className="text-white/60 text-xs font-medium tracking-widest uppercase">Question Image Preview • Click backdrop to close</p>
+          {/* Controls Bar */}
+          <div className="absolute top-0 left-0 right-0 p-6 flex justify-between items-center z-20 pointer-events-none">
+             <div className="flex items-center gap-4 pointer-events-auto">
+               <button 
+                 onClick={(e) => { e.stopPropagation(); setPreviewIndex(null); }}
+                 className="p-3 bg-white/10 hover:bg-white/20 text-white rounded-full transition-all group active:scale-90"
+                 title="Close"
+               >
+                 <X size={24} />
+               </button>
+               {!isReCropMode && (
+                 <button 
+                    onClick={(e) => { e.stopPropagation(); startReCrop(); }}
+                    className="px-6 py-2.5 bg-indigo-600 text-white font-bold rounded-full hover:bg-indigo-700 flex items-center gap-2 shadow-xl shadow-indigo-900/40 transition-all active:scale-95"
+                 >
+                    <Crop size={18} /> Adjust Frame
+                 </button>
+               )}
+               {isReCropMode && (
+                 <div className="flex items-center gap-2">
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); handleSaveReCrop(); }}
+                      disabled={isUpdatingCrop}
+                      className="px-6 py-2.5 bg-green-600 text-white font-bold rounded-full hover:bg-green-700 flex items-center gap-2 shadow-xl shadow-green-900/40 disabled:opacity-50"
+                    >
+                      {isUpdatingCrop ? <Loader2 size={18} className="animate-spin" /> : <CheckCircle size={18} />}
+                      Save Crop
+                    </button>
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); setIsReCropMode(false); setTempBox(null); }}
+                      disabled={isUpdatingCrop}
+                      className="px-6 py-2.5 bg-white/10 text-white font-bold rounded-full hover:bg-white/20 flex items-center gap-2"
+                    >
+                      <Undo size={18} /> Cancel
+                    </button>
+                 </div>
+               )}
+             </div>
+
+             {/* Gallery Navigation Arrows (Only if not cropping) */}
+             {!isReCropMode && (
+               <div className="flex gap-2 pointer-events-auto">
+                 <button 
+                  className="p-3 text-white bg-white/10 hover:bg-white/20 rounded-full transition-all active:scale-90"
+                  onClick={(e) => { e.stopPropagation(); handlePrevPreview(); }}
+                 >
+                  <ChevronLeft size={32} />
+                 </button>
+                 <button 
+                  className="p-3 text-white bg-white/10 hover:bg-white/20 rounded-full transition-all active:scale-90"
+                  onClick={(e) => { e.stopPropagation(); handleNextPreview(); }}
+                 >
+                  <ChevronRight size={32} />
+                 </button>
+               </div>
+             )}
+          </div>
+
+          <div className="relative max-w-5xl w-full h-full flex flex-col items-center justify-center p-8 pointer-events-none">
+            
+            {/* --- DISPLAY MODES --- */}
+            {isReCropMode ? (
+              // FULL IMAGE MODE (CROPPER)
+              <div 
+                ref={reCropContainerRef}
+                className="relative inline-block shadow-2xl rounded-lg bg-slate-800 pointer-events-auto select-none"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <img 
+                  src={previewItem?.sourceImageUrl} 
+                  className="max-w-full max-h-[75vh] object-contain rounded-lg opacity-60"
+                  alt="Full Paper"
+                  draggable={false}
+                />
+                
+                {/* Manual Crop Handle Box */}
+                {tempBox && (
+                  <div
+                    className="absolute border-4 border-indigo-400 bg-indigo-500/10 z-30 shadow-[0_0_0_1000px_rgba(0,0,0,0.4)]"
+                    style={{
+                      top: `${(tempBox.ymin / 1000) * 100}%`,
+                      left: `${(tempBox.xmin / 1000) * 100}%`,
+                      height: `${((tempBox.ymax - tempBox.ymin) / 1000) * 100}%`,
+                      width: `${((tempBox.xmax - tempBox.xmin) / 1000) * 100}%`,
+                    }}
+                  >
+                    {/* Handles */}
+                    <div onMouseDown={(e) => handleResizeStart(e, 'nw')} className="absolute -top-2 -left-2 w-4 h-4 bg-white border-2 border-indigo-600 rounded-full cursor-nw-resize"/>
+                    <div onMouseDown={(e) => handleResizeStart(e, 'ne')} className="absolute -top-2 -right-2 w-4 h-4 bg-white border-2 border-indigo-600 rounded-full cursor-ne-resize"/>
+                    <div onMouseDown={(e) => handleResizeStart(e, 'sw')} className="absolute -bottom-2 -left-2 w-4 h-4 bg-white border-2 border-indigo-600 rounded-full cursor-sw-resize"/>
+                    <div onMouseDown={(e) => handleResizeStart(e, 'se')} className="absolute -bottom-2 -right-2 w-4 h-4 bg-white border-2 border-indigo-600 rounded-full cursor-se-resize"/>
+                    
+                    <span className="absolute -top-8 left-0 bg-indigo-600 text-white px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider">
+                      Adjusting Question Frame
+                    </span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              // SINGLE CROP PREVIEW MODE
+              <div className="relative animate-in zoom-in-95 duration-300">
+                {previewImageUrl ? (
+                  <img 
+                    src={previewImageUrl} 
+                    className="max-w-full max-h-[80vh] object-contain rounded-xl shadow-2xl border border-white/10 pointer-events-auto"
+                    alt="Question Preview"
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <div className="bg-white/5 p-12 rounded-2xl flex flex-col items-center gap-4 text-white/40">
+                    <ImageIcon size={64} />
+                    <p className="font-medium">No image content available</p>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            {/* Status Info Footer */}
+            <div className="mt-8 text-center bg-slate-900/60 backdrop-blur px-6 py-3 rounded-full border border-white/10 pointer-events-auto">
+              <p className="text-white font-bold tracking-tight">
+                {isReCropMode ? 'Adjusting Original Paper Scan' : `Question ${previewItem?.id ? String(previewItem.id).slice(-8).toUpperCase() : (previewIndex + 1)}`}
+              </p>
+              <p className="text-white/60 text-[10px] font-medium tracking-widest uppercase mt-1">
+                {isReCropMode ? 'Drag corners to fix overlaps or cutouts' : `Item ${previewIndex + 1} of ${filteredQuestions.length} • Arrow keys to navigate`}
+              </p>
             </div>
           </div>
         </div>

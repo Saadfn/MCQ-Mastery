@@ -120,6 +120,13 @@ export const FirebaseService = {
     return await getDownloadURL(storageRef);
   },
 
+  uploadOriginalImage: async (id: string, base64Image: string): Promise<string> => {
+    const blob = base64ToBlob(base64Image);
+    const storageRef = ref(storage, `original_papers/${id}.png`);
+    await uploadBytes(storageRef, blob);
+    return await getDownloadURL(storageRef);
+  },
+
   uploadPdf: async (file: File): Promise<string> => {
     const timestamp = Date.now();
     const fileName = `${timestamp}_${file.name}`;
@@ -135,6 +142,14 @@ export const FirebaseService = {
       id: docId, // Ensure ID is saved as string
       userId,
       createdAt: serverTimestamp()
+    });
+  },
+
+  updateQuestion: async (id: string, updates: Partial<QuestionSegment>) => {
+    const ref = doc(db, "questions", id);
+    await updateDoc(ref, {
+      ...updates,
+      updatedAt: serverTimestamp()
     });
   },
 

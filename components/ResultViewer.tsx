@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { QuestionSegment, Subject } from '../types';
 import { Save, BookOpen, Layers, CheckSquare, CheckCircle2, MousePointerClick, Loader2 } from 'lucide-react';
@@ -18,6 +19,9 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
   const [savedIds, setSavedIds] = useState<Set<string | number>>(new Set());
   const [isSaving, setIsSaving] = useState(false);
   
+  // Track the uploaded source image URL so we don't upload it multiple times for one paper
+  const [sourcePaperUrl, setSourcePaperUrl] = useState<string | null>(null);
+
   // Resizing State
   const [resizingHandle, setResizingHandle] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -25,6 +29,7 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
 
   useEffect(() => {
     setSegments(initialSegments);
+    setSourcePaperUrl(null); // Reset when a new image comes in
   }, [initialSegments]);
 
   // --- Handlers ---
@@ -43,10 +48,21 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
     }));
   };
 
+  const getOrUploadSourcePaper = async (): Promise<string> => {
+    if (sourcePaperUrl) return sourcePaperUrl;
+    const paperId = crypto.randomUUID();
+    const url = await FirebaseService.uploadOriginalImage(paperId, originalImage);
+    setSourcePaperUrl(url);
+    return url;
+  };
+
   const saveToFirebase = async (segment: QuestionSegment) => {
     if (!auth.currentUser) return;
     const newId = crypto.randomUUID();
     
+    // Ensure original paper is uploaded
+    const paperUrl = await getOrUploadSourcePaper();
+
     // 1. Upload Image if cropUrl exists
     let downloadUrl = "";
     if (segment.cropUrl) {
@@ -57,9 +73,8 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
     const payload: QuestionSegment = {
       ...segment,
       id: newId,
-      imageUrl: downloadUrl, // Save the remote URL
-      // remove cropUrl to save space in DB if desired, but nice to keep local for now? 
-      // Actually Firestore rules might not like huge strings, better to set cropUrl to null or same as imageUrl
+      imageUrl: downloadUrl,
+      sourceImageUrl: paperUrl,
       cropUrl: downloadUrl, 
     };
 
@@ -87,8 +102,7 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
     
     setIsSaving(true);
     try {
-      // Process in parallel or sequence? Parallel is faster but might hit rate limits. 
-      // Let's do batch of 5
+      // Process in parallel or sequence? Sequential is safer for the source paper upload
       for (let i = 0; i < unsaved.length; i += 5) {
         const batch = unsaved.slice(i, i + 5);
         await Promise.all(batch.map(s => saveToFirebase(s)));
@@ -106,7 +120,7 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({ originalImage, segme
     }
   };
 
-  // --- Resizing Logic (Unchanged) ---
+  // --- Resizing Logic ---
   const handleMouseDown = (e: React.MouseEvent, id: string | number) => {
     e.stopPropagation();
     setSelectedId(id);

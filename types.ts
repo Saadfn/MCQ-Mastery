@@ -12,6 +12,7 @@ export interface QuestionSegment {
   text: string;
   cropUrl?: string; // This can be Base64 (local) or HTTP URL (remote)
   imageUrl?: string; // Explicitly for the stored URL in Firestore
+  sourceImageUrl?: string; // URL of the original full-page paper
   
   // Metadata fields
   subject?: string;        

@@ -94,6 +94,10 @@ class BackgroundProcessor {
           progress: `Analyzing Page ${pageNum}/${pages.length} with Gemini...` 
         });
 
+        // 2a. Upload Original Paper Image first (Unique ID per page)
+        const originalPaperId = crypto.randomUUID();
+        const originalPaperUrl = await FirebaseService.uploadOriginalImage(originalPaperId, pageData);
+
         const base64Clean = pageData.split(',')[1];
         const analysis = await analyzeImage(base64Clean, 'image/png');
         
@@ -118,6 +122,7 @@ class BackgroundProcessor {
             id: docId,
             imageUrl: downloadUrl,
             cropUrl: downloadUrl,
+            sourceImageUrl: originalPaperUrl, // Link to full paper
             createdAt: new Date() 
           };
 
