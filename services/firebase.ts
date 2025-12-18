@@ -1,3 +1,4 @@
+
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
 import { 
@@ -17,14 +18,15 @@ import {
   query, 
   where, 
   orderBy, 
-  serverTimestamp
-} from "firebase/firestore";
+  serverTimestamp,
+  writeBatch
+} from "@firebase/firestore";
 import { 
   getStorage, 
   ref, 
   uploadBytes, 
   getDownloadURL 
-} from "firebase/storage";
+} from "@firebase/storage";
 import { ExamSession, QuestionSegment, Subject, Chapter } from "../types";
 
 const firebaseConfig = {
@@ -75,48 +77,34 @@ const base64ToBlob = (base64: string): Blob => {
 };
 
 export const FirebaseService = {
-  // --- Subjects & Chapters (Nested Collection Structure) ---
+  // --- Subjects & Chapters ---
   
   getSubjects: async (): Promise<Subject[]> => {
-    // 1. Fetch all subjects
     const subjectsRef = collection(db, "subjects");
     const snapshot = await getDocs(subjectsRef);
-    
-    // 2. Fetch chapters for each subject in parallel
     const subjects = await Promise.all(snapshot.docs.map(async (docSnap) => {
       const data = docSnap.data();
       const chaptersRef = collection(db, "subjects", docSnap.id, "chapters");
       const chapSnap = await getDocs(chaptersRef);
       const chapters = chapSnap.docs.map(c => ({ id: c.id, name: c.data().name } as Chapter));
-      
-      return {
-        id: docSnap.id,
-        name: data.name,
-        chapters: chapters
-      };
+      return { id: docSnap.id, name: data.name, chapters: chapters };
     }));
-    
     return subjects;
   },
 
   createSubject: async (name: string): Promise<Subject> => {
     const id = name.toLowerCase().replace(/\s+/g, '_');
-    const newSubject: Subject = { id, name, chapters: [] };
-    // Only save the name to the parent doc, chapters are a subcollection
     await setDoc(doc(db, "subjects", id), { name });
-    return newSubject;
+    return { id, name, chapters: [] };
   },
   
   deleteSubject: async (id: string) => {
     await deleteDoc(doc(db, "subjects", id));
-    // Note: This leaves orphaned subcollections in Firestore (client SDK cannot delete collections).
-    // In a production app, use Cloud Functions to recursive delete.
   },
 
   createChapter: async (subjectId: string, chapterName: string): Promise<Chapter> => {
     const chapterId = chapterName.toLowerCase().replace(/\s+/g, '_');
-    const chapterData = { name: chapterName };
-    await setDoc(doc(db, "subjects", subjectId, "chapters", chapterId), chapterData);
+    await setDoc(doc(db, "subjects", subjectId, "chapters", chapterId), { name: chapterName });
     return { id: chapterId, name: chapterName };
   },
 
@@ -132,9 +120,19 @@ export const FirebaseService = {
     return await getDownloadURL(storageRef);
   },
 
+  uploadPdf: async (file: File): Promise<string> => {
+    const timestamp = Date.now();
+    const fileName = `${timestamp}_${file.name}`;
+    const storageRef = ref(storage, `input-pdfs/${fileName}`);
+    await uploadBytes(storageRef, file);
+    return fileName;
+  },
+
   saveQuestion: async (question: QuestionSegment, userId: string) => {
-    await setDoc(doc(db, "questions", String(question.id)), {
+    const docId = String(question.id);
+    await setDoc(doc(db, "questions", docId), {
       ...question,
+      id: docId, // Ensure ID is saved as string
       userId,
       createdAt: serverTimestamp()
     });
@@ -143,7 +141,42 @@ export const FirebaseService = {
   getQuestions: async (): Promise<QuestionSegment[]> => {
     const q = query(collection(db, "questions"), orderBy("createdAt", "desc"));
     const snapshot = await getDocs(q);
-    return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as QuestionSegment));
+    // Force document ID to string to avoid type mismatches later
+    return snapshot.docs.map(d => ({ 
+      ...d.data(), 
+      id: String(d.id) 
+    } as QuestionSegment));
+  },
+
+  deleteQuestion: async (id: string | number) => {
+    const docId = String(id);
+    console.log(`[Firebase] Deleting document: questions/${docId}`);
+    try {
+      await deleteDoc(doc(db, "questions", docId));
+      console.log(`[Firebase] Successfully deleted: ${docId}`);
+    } catch (err) {
+      console.error(`[Firebase] Delete failed for ${docId}:`, err);
+      throw err;
+    }
+  },
+
+  deleteQuestionsBatch: async (ids: (string | number)[]) => {
+    console.log(`[Firebase] Starting batch delete for ${ids.length} items`);
+    const chunks = [];
+    const stringIds = ids.map(id => String(id));
+    for (let i = 0; i < stringIds.length; i += 500) {
+      chunks.push(stringIds.slice(i, i + 500));
+    }
+
+    for (const chunk of chunks) {
+      const batch = writeBatch(db);
+      chunk.forEach(id => {
+        const ref = doc(db, "questions", id);
+        batch.delete(ref);
+      });
+      await batch.commit();
+      console.log(`[Firebase] Committed batch of ${chunk.length} items`);
+    }
   },
 
   // --- Exam Sessions ---

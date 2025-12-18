@@ -1,6 +1,8 @@
-import { GoogleGenAI, Type, Schema } from "@google/genai";
+
+import { GoogleGenAI, Type } from "@google/genai";
 import { AnalysisResult } from "../types";
 
+// System prompt remains the same, guiding the model on MCQ extraction logic
 const SYSTEM_PROMPT = `
 You are a Computer Vision Simulation Engine for MCQ Extraction. 
 Your goal is to analyze an image of a question paper and simulate the following segmentation pipeline to identify individual questions.
@@ -51,7 +53,8 @@ For each question, provide:
 Do not strictly adhere to pixel-perfect algorithmic kernel sizes as you are a VLM, but adhere to the *intent* of separating questions based on vertical spacing and numbering.
 `;
 
-const responseSchema: Schema = {
+// Define responseSchema as a plain object using Type enum as per guidelines
+const responseSchema = {
   type: Type.OBJECT,
   properties: {
     questions: {
@@ -82,13 +85,12 @@ const responseSchema: Schema = {
   required: ["questions"]
 };
 
+/**
+ * Analyzes an image using Gemini 3 Pro to extract MCQ questions.
+ */
 export const analyzeImage = async (base64Image: string, mimeType: string): Promise<AnalysisResult> => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) {
-    throw new Error("API Key not found in environment");
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
+  // Always initialize GoogleGenAI strictly using process.env.API_KEY
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
   try {
     const response = await ai.models.generateContent({
@@ -102,7 +104,7 @@ export const analyzeImage = async (base64Image: string, mimeType: string): Promi
             }
           },
           {
-            text: "Perform the MCQ segmentation and content analysis."
+            text: "Perform the MCQ segmentation and content analysis based on the system instructions."
           }
         ]
       },
@@ -113,10 +115,11 @@ export const analyzeImage = async (base64Image: string, mimeType: string): Promi
       }
     });
 
+    // Access the response text property directly
     const text = response.text;
     if (!text) throw new Error("No response from Gemini");
     
-    return JSON.parse(text) as AnalysisResult;
+    return JSON.parse(text.trim()) as AnalysisResult;
 
   } catch (error) {
     console.error("Gemini Analysis Failed:", error);

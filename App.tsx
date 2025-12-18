@@ -1,14 +1,16 @@
+
 import React, { useState, useEffect } from 'react';
 import { UploadZone } from './components/UploadZone';
 import { ResultViewer } from './components/ResultViewer';
 import { SubjectManager } from './components/SubjectManager';
 import { AdminLogin } from './components/AdminLogin';
 import { AdminDashboard } from './components/AdminDashboard';
+import { QuestionBank } from './components/QuestionBank';
 import { StudentExam } from './components/StudentExam';
 import { analyzeImage } from './services/geminiService';
 import { extractCrops } from './utils/imageUtils';
 import { AppState, QuestionSegment, Subject } from './types';
-import { Loader2, AlertCircle, ShieldCheck, LogOut, LayoutDashboard, ScanLine, ArrowLeft } from 'lucide-react';
+import { Loader2, AlertCircle, ShieldCheck, LogOut, LayoutDashboard, ScanLine, ArrowLeft, Database } from 'lucide-react';
 import { ensureAuth, FirebaseService } from './services/firebase';
 
 const App: React.FC = () => {
@@ -55,9 +57,6 @@ const App: React.FC = () => {
 
   const handleSubjectsUpdate = (newSubjects: Subject[]) => {
     setSubjects(newSubjects);
-    // Note: Saving happens inside SubjectManager individual calls mostly, 
-    // but if we do bulk updates we might need a different approach.
-    // For now, SubjectManager will call Firebase directly, we just update local state to reflect it.
   };
 
   const handleGoHome = () => {
@@ -96,7 +95,7 @@ const App: React.FC = () => {
         // Standardize subjects
         const standardizedSegments = segmentsWithCrops.map(seg => {
            if (seg.subject) {
-             const match = subjects.find(s => s.name.toLowerCase() === seg.subject?.toLowerCase());
+             const match = subjects.find(s => s.name?.toLowerCase() === seg.subject?.toLowerCase());
              if (match) {
                return { ...seg, subject: match.name };
              }
@@ -120,7 +119,7 @@ const App: React.FC = () => {
   const renderAdminHeader = () => (
     <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-50 text-white">
       <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 cursor-pointer" onClick={() => setState(AppState.ADMIN_DASHBOARD)}>
           <ShieldCheck className="text-indigo-400" />
           <h1 className="font-bold text-xl tracking-tight">Admin<span className="text-indigo-400">Panel</span></h1>
         </div>
@@ -131,6 +130,12 @@ const App: React.FC = () => {
             className={`flex items-center gap-2 text-sm font-medium transition-colors ${state === AppState.ADMIN_DASHBOARD ? 'text-indigo-400' : 'text-slate-400 hover:text-white'}`}
           >
             <LayoutDashboard size={16} /> Dashboard
+          </button>
+          <button 
+            onClick={() => { setState(AppState.ADMIN_BANK); setSegments([]); setImageSrc(null); }}
+            className={`flex items-center gap-2 text-sm font-medium transition-colors ${state === AppState.ADMIN_BANK ? 'text-indigo-400' : 'text-slate-400 hover:text-white'}`}
+          >
+            <Database size={16} /> Question Bank
           </button>
           <button 
             onClick={() => { setState(AppState.ADMIN_UPLOAD); setSegments([]); setImageSrc(null); }}
@@ -162,7 +167,6 @@ const App: React.FC = () => {
         </div>
         
         <div className="flex items-center gap-4">
-          {/* Secret Admin Link Area */}
           <button 
             onClick={() => setState(AppState.ADMIN_LOGIN)}
             className="text-xs text-slate-300 hover:text-slate-800 transition-colors font-mono"
@@ -175,7 +179,6 @@ const App: React.FC = () => {
     </header>
   );
 
-  // --- Initial Loading ---
   if (!isAuthReady) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -186,8 +189,6 @@ const App: React.FC = () => {
       </div>
     );
   }
-
-  // --- Main Render Switch ---
 
   if (state === AppState.ADMIN_LOGIN) {
     return (
@@ -202,14 +203,13 @@ const App: React.FC = () => {
     );
   }
 
-  // Student Flow
   if (state === AppState.HOME || state === AppState.TAKING_EXAM || state === AppState.EXAM_RESULT) {
     return (
       <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
         {renderStudentHeader()}
         <main className="max-w-7xl mx-auto px-4">
            <StudentExam 
-             key={resetKey} // Force reset on new session
+             key={resetKey} 
              subjects={subjects} 
              onFinish={handleGoHome}
            />
@@ -218,21 +218,20 @@ const App: React.FC = () => {
     );
   }
 
-  // Admin Flow
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
       {renderAdminHeader()}
       
       <main className="max-w-7xl mx-auto px-4 py-8">
         
-        {state === AppState.ADMIN_DASHBOARD && (
-          <AdminDashboard />
-        )}
+        {state === AppState.ADMIN_DASHBOARD && <AdminDashboard />}
+
+        {state === AppState.ADMIN_BANK && <QuestionBank />}
 
         {state === AppState.ADMIN_SUBJECTS && (
            <SubjectManager 
              subjects={subjects} 
-             onUpdateSubjects={handleSubjectsUpdate} // Callback to update local state after DB change
+             onUpdateSubjects={handleSubjectsUpdate} 
              onBack={() => setState(AppState.ADMIN_UPLOAD)} 
            />
         )}

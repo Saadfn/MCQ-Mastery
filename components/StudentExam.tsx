@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback } from 'react';
 import { Subject, QuestionSegment, UserAnswer, ExamSession } from '../types';
 import { ChevronRight, CheckCircle, XCircle, Trophy, LayoutList, MonitorPlay, Clock, Loader2 } from 'lucide-react';
@@ -37,16 +38,12 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
       const allQs = await FirebaseService.getQuestions();
       
       // Filter client-side for now (ideal: server side 'where' clauses)
-      const selectedSubName = subjects.find(s => s.id === selectedSubjectId)?.name.toLowerCase();
+      const selectedSubName = subjects.find(s => s.id === selectedSubjectId)?.name?.toLowerCase();
       
       let filtered = allQs.filter(q => {
          const qSub = q.subject?.toLowerCase();
          return qSub === selectedSubName || qSub === selectedSubjectId.toLowerCase();
       });
-
-      if (selectedChapterId) {
-        filtered = filtered.filter(q => q.chapter === selectedChapterId);
-      }
 
       if (filtered.length === 0) {
         alert("No questions found for this selection. Please try another subject.");
@@ -144,7 +141,7 @@ export const StudentExam: React.FC<StudentExamProps> = ({ subjects, onFinish }) 
   };
 
   if (step === 'SELECT') {
-    const activeSubject = subjects.find(s => s.id === selectedSubjectId || s.name.toLowerCase() === selectedSubjectId.toLowerCase());
+    const activeSubject = subjects.find(s => s.id === selectedSubjectId || s.name?.toLowerCase() === selectedSubjectId?.toLowerCase());
 
     return (
       <div className="max-w-xl mx-auto py-12 px-4 animate-in fade-in slide-in-from-bottom-8">

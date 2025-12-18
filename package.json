@@ -13,7 +13,10 @@
     "react": "^19.2.1",
     "lucide-react": "^0.556.0",
     "react-dom": "^19.2.1",
-    "firebase": "^12.6.0"
+    "firebase": "^12.6.0",
+    "@firebase/storage": "^0.14.0",
+    "@firebase/firestore": "^4.9.3",
+    "pdfjs-dist": "4.0.379"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
