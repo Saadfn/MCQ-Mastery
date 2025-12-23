@@ -11,8 +11,8 @@ export default defineConfig(({ mode }) => {
       },
       plugins: [react()],
       define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+        // GEMINI_API_KEY is now handled by FastAPI backend (more secure)
+        // Only VITE_API_URL is needed for the frontend
       },
       resolve: {
         alias: {
